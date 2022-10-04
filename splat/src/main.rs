@@ -1,5 +1,6 @@
-use splat::render;
+use splat::{render, BasicTriangleDrawLayer, DrawLayer};
 
 fn main() {
-    render();
+    let layers: Vec<Box<dyn DrawLayer>> = vec![Box::new(BasicTriangleDrawLayer::default())];
+    render(layers);
 }

@@ -17,9 +17,10 @@ use vulkano::{
     render_pass::{RenderPass, Subpass},
 };
 
+#[derive(Default)]
 pub struct BasicTriangleDrawLayer {
-    pipeline: Arc<GraphicsPipeline>,
-    vertex_buffer: Arc<CpuAccessibleBuffer<[Vertex]>>,
+    pipeline: Option<Arc<GraphicsPipeline>>,
+    vertex_buffer: Option<Arc<CpuAccessibleBuffer<[Vertex]>>>,
 }
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Zeroable, Pod)]
@@ -27,8 +28,8 @@ struct Vertex {
     position: [f32; 2],
 }
 impl_vertex!(Vertex, position);
-impl BasicTriangleDrawLayer {
-    pub fn new(device: Arc<Device>, render_pass: Arc<RenderPass>) -> Self {
+impl DrawLayer for BasicTriangleDrawLayer {
+    fn setup(&mut self, device: Arc<Device>, render_pass: Arc<RenderPass>) {
         let vertices = [
             Vertex {
                 position: [-0.5, -0.25],
@@ -96,21 +97,17 @@ impl BasicTriangleDrawLayer {
             .build(device.clone())
             .expect("Could not build pipeline");
 
-        Self {
-            pipeline,
-            vertex_buffer,
-        }
+        self.pipeline = Some(pipeline);
+        self.vertex_buffer = Some(vertex_buffer);
     }
-}
-impl DrawLayer for BasicTriangleDrawLayer {
     fn draw(
         &mut self,
         command_buffer_builder: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
     ) {
         command_buffer_builder
-            .bind_pipeline_graphics(self.pipeline.clone())
-            .bind_vertex_buffers(0, self.vertex_buffer.clone())
-            .draw(self.vertex_buffer.len() as u32, 1, 0, 0)
+            .bind_pipeline_graphics(self.pipeline.as_ref().unwrap().clone())
+            .bind_vertex_buffers(0, self.vertex_buffer.as_ref().unwrap().clone())
+            .draw(self.vertex_buffer.as_ref().unwrap().len() as u32, 1, 0, 0)
             .unwrap();
     }
 }

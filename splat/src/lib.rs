@@ -1,16 +1,16 @@
-use crate::{
-    layers::basic::BasicTriangleDrawLayer,
-    util::{
-        create_framebuffers, create_instance, create_surface, create_swapchain,
-        get_device_extensions, get_logical_device_and_queues, get_physical_device_and_queue_family,
-    },
+use crate::util::{
+    create_framebuffers, create_instance, create_surface, create_swapchain, get_device_extensions,
+    get_logical_device_and_queues, get_physical_device_and_queue_family,
 };
+use std::sync::Arc;
 use vulkano::{
     command_buffer::{
         AutoCommandBufferBuilder, CommandBufferUsage, PrimaryAutoCommandBuffer,
         RenderPassBeginInfo, SubpassContents,
     },
+    device::Device,
     pipeline::graphics::viewport::Viewport,
+    render_pass::RenderPass,
     swapchain::{
         acquire_next_image, AcquireError, PresentInfo, SwapchainCreateInfo, SwapchainCreationError,
     },
@@ -24,14 +24,17 @@ use winit::{
 mod layers;
 mod util;
 
+pub use layers::basic::BasicTriangleDrawLayer;
+
 pub trait DrawLayer {
+    fn setup(&mut self, device: Arc<Device>, render_pass: Arc<RenderPass>);
     fn draw(
         &mut self,
         command_buffer_builder: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
     );
 }
 
-pub fn render() {
+pub fn render(mut layers: Vec<Box<dyn DrawLayer>>) {
     let event_loop = EventLoop::new();
 
     let instance = create_instance();
@@ -41,7 +44,7 @@ pub fn render() {
         get_physical_device_and_queue_family(instance.clone(), surface.clone(), &device_extensions);
 
     println!(
-        "Using device: {} (type: {:?})",
+        "Using graphics device: {} ({:?})",
         physical_device.properties().device_name,
         physical_device.properties().device_type,
     );
@@ -80,16 +83,9 @@ pub fn render() {
     let mut framebuffers = create_framebuffers(&images, render_pass.clone(), &mut viewport);
 
     // Set up render layers
-    let mut layers = vec![
-        Box::new(BasicTriangleDrawLayer::new(
-            device.clone(),
-            render_pass.clone(),
-        )),
-        Box::new(BasicTriangleDrawLayer::new(
-            device.clone(),
-            render_pass.clone(),
-        )),
-    ];
+    for layer in layers.iter_mut() {
+        layer.setup(device.clone(), render_pass.clone());
+    }
 
     // Loop
     let mut is_swapchain_invalid = false;
