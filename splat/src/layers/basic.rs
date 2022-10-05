@@ -4,13 +4,13 @@ use std::{fmt::Debug, sync::Arc};
 use vulkano::{
     buffer::{BufferUsage, CpuAccessibleBuffer, TypedBufferAccess},
     command_buffer::{AutoCommandBufferBuilder, PrimaryAutoCommandBuffer},
-    device::Device,
+    device::{Device, Queue},
     impl_vertex,
     pipeline::{
         graphics::{
             input_assembly::{InputAssemblyState, PrimitiveTopology},
             vertex_input::BuffersDefinition,
-            viewport::ViewportState,
+            viewport::{Viewport, ViewportState},
         },
         GraphicsPipeline,
     },
@@ -29,7 +29,7 @@ struct Vertex {
 }
 impl_vertex!(Vertex, position);
 impl DrawLayer for BasicTriangleDrawLayer {
-    fn setup(&mut self, device: Arc<Device>, render_pass: Arc<RenderPass>) {
+    fn setup(&mut self, device: Arc<Device>, queue: Arc<Queue>, render_pass: Arc<RenderPass>) {
         let vertices = [
             Vertex {
                 position: [-0.5, -0.25],
@@ -103,6 +103,7 @@ impl DrawLayer for BasicTriangleDrawLayer {
     fn draw(
         &mut self,
         command_buffer_builder: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
+        viewport: Viewport,
     ) {
         command_buffer_builder
             .bind_pipeline_graphics(self.pipeline.as_ref().unwrap().clone())

@@ -6,8 +6,8 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-vulkano = "0.31.0" 
-vulkano-shaders = "0.31.0" 
+vulkano = "0.31.1" 
+vulkano-shaders = "0.31.1" 
 winit = "0.27.3"
 vulkano-win = "0.31.0" 
 vulkano-util ="0.31.0" 
@@ -18,4 +18,4 @@ serde = { version = "1.0", features = ["derive"] }
 ron = "0.8"
 rand = "0.8.4"
 glium = "0.32.1"
-
+rusttype = { version = "0.8.3", features = ["gpu_cache"] }

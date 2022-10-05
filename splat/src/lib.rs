@@ -8,7 +8,7 @@ use vulkano::{
         AutoCommandBufferBuilder, CommandBufferUsage, PrimaryAutoCommandBuffer,
         RenderPassBeginInfo, SubpassContents,
     },
-    device::Device,
+    device::{Device, Queue},
     pipeline::graphics::viewport::Viewport,
     render_pass::RenderPass,
     swapchain::{
@@ -24,13 +24,14 @@ use winit::{
 mod layers;
 mod util;
 
-pub use layers::basic::BasicTriangleDrawLayer;
+pub use layers::{basic::BasicTriangleDrawLayer, text::TextDrawLayer};
 
 pub trait DrawLayer {
-    fn setup(&mut self, device: Arc<Device>, render_pass: Arc<RenderPass>);
+    fn setup(&mut self, device: Arc<Device>, queue: Arc<Queue>, render_pass: Arc<RenderPass>);
     fn draw(
         &mut self,
         command_buffer_builder: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
+        viewport: Viewport,
     );
 }
 
@@ -84,7 +85,7 @@ pub fn render(mut layers: Vec<Box<dyn DrawLayer>>) {
 
     // Set up render layers
     for layer in layers.iter_mut() {
-        layer.setup(device.clone(), render_pass.clone());
+        layer.setup(device.clone(), queue.clone(), render_pass.clone());
     }
 
     // Loop
@@ -167,7 +168,7 @@ pub fn render(mut layers: Vec<Box<dyn DrawLayer>>) {
                     .set_viewport(0, [viewport.clone()]);
 
                 for layer in layers.iter_mut() {
-                    layer.draw(&mut command_buffer_builder);
+                    layer.draw(&mut command_buffer_builder, viewport.clone());
                 }
 
                 command_buffer_builder.end_render_pass().unwrap();
