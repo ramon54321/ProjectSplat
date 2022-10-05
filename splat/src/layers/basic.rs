@@ -1,16 +1,15 @@
-use crate::DrawLayer;
+use crate::{DrawLayer, GpuInterface, Meta};
 use bytemuck::{Pod, Zeroable};
 use std::{fmt::Debug, sync::Arc};
 use vulkano::{
     buffer::{BufferUsage, CpuAccessibleBuffer, TypedBufferAccess},
-    command_buffer::{AutoCommandBufferBuilder, PrimaryAutoCommandBuffer},
     device::{Device, Queue},
     impl_vertex,
     pipeline::{
         graphics::{
             input_assembly::{InputAssemblyState, PrimitiveTopology},
             vertex_input::BuffersDefinition,
-            viewport::{Viewport, ViewportState},
+            viewport::ViewportState,
         },
         GraphicsPipeline,
     },
@@ -28,8 +27,8 @@ struct Vertex {
     position: [f32; 2],
 }
 impl_vertex!(Vertex, position);
-impl DrawLayer for BasicTriangleDrawLayer {
-    fn setup(&mut self, device: Arc<Device>, queue: Arc<Queue>, render_pass: Arc<RenderPass>) {
+impl<T> DrawLayer<T> for BasicTriangleDrawLayer {
+    fn setup(&mut self, device: Arc<Device>, _queue: Arc<Queue>, render_pass: Arc<RenderPass>) {
         let vertices = [
             Vertex {
                 position: [-0.5, -0.25],
@@ -100,12 +99,9 @@ impl DrawLayer for BasicTriangleDrawLayer {
         self.pipeline = Some(pipeline);
         self.vertex_buffer = Some(vertex_buffer);
     }
-    fn draw(
-        &mut self,
-        command_buffer_builder: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
-        viewport: Viewport,
-    ) {
-        command_buffer_builder
+    fn draw(&mut self, gpu_interface: &mut GpuInterface, _meta: &mut Meta, _state: &mut T) {
+        gpu_interface
+            .command_buffer_builder
             .bind_pipeline_graphics(self.pipeline.as_ref().unwrap().clone())
             .bind_vertex_buffers(0, self.vertex_buffer.as_ref().unwrap().clone())
             .draw(self.vertex_buffer.as_ref().unwrap().len() as u32, 1, 0, 0)

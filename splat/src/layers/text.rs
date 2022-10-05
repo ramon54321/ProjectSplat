@@ -1,23 +1,20 @@
-use crate::DrawLayer;
+use crate::{AlignHorizontal, AlignVertical, DrawLayer, GpuInterface, Meta};
 use bytemuck::{Pod, Zeroable};
-use rusttype::{gpu_cache::Cache, point, Font, Glyph, PositionedGlyph, Rect, Scale};
-use std::{fmt::Debug, io::Cursor, sync::Arc};
+use rusttype::{gpu_cache::Cache, point, vector, Font, PositionedGlyph, Rect, Scale};
+use std::{fmt::Debug, sync::Arc};
 use vulkano::{
     buffer::{BufferUsage, CpuAccessibleBuffer, TypedBufferAccess},
-    command_buffer::{AutoCommandBufferBuilder, CopyBufferToImageInfo, PrimaryAutoCommandBuffer},
     descriptor_set::{PersistentDescriptorSet, WriteDescriptorSet},
     device::{Device, Queue},
     format::Format,
-    image::{
-        view::{ImageView, ImageViewCreateInfo},
-        ImageCreateFlags, ImageDimensions, ImageLayout, ImageUsage, ImmutableImage, MipmapsCount,
-    },
+    image::{view::ImageView, ImageDimensions, ImmutableImage, MipmapsCount},
     impl_vertex,
     pipeline::{
         graphics::{
+            color_blend::ColorBlendState,
             input_assembly::{InputAssemblyState, PrimitiveTopology},
             vertex_input::BuffersDefinition,
-            viewport::{Viewport, ViewportState},
+            viewport::ViewportState,
         },
         GraphicsPipeline, Pipeline, PipelineBindPoint,
     },
@@ -25,8 +22,8 @@ use vulkano::{
     sampler::{Filter, Sampler, SamplerAddressMode, SamplerCreateInfo, SamplerMipmapMode},
 };
 
-const CACHE_WIDTH: usize = 1000;
-const CACHE_HEIGHT: usize = 1000;
+const CACHE_WIDTH: usize = 1024;
+const CACHE_HEIGHT: usize = 1024;
 
 struct TextData {
     glyphs: Vec<PositionedGlyph<'static>>,
@@ -52,24 +49,75 @@ struct Vertex {
 }
 impl_vertex!(Vertex, position, tex_position, color);
 impl TextDrawLayer {
-    fn queue_text(&mut self, x: f32, y: f32, size: f32, color: [f32; 4], text: &str) {
-        let glyphs = self
-            .font
-            .as_ref()
-            .unwrap()
-            .layout(text, Scale::uniform(size), point(x, y))
-            .map(|glyph| glyph.standalone())
-            .collect::<Vec<_>>();
+    pub fn enqueue_text(
+        &mut self,
+        x: f32,
+        y: f32,
+        size: f32,
+        align_horizontal: AlignHorizontal,
+        align_vertical: AlignVertical,
+        color: [f32; 4],
+        text: &str,
+    ) {
+        // Place glyphs
+        let scale = Scale::uniform(size);
+
+        let mut glyphs = Vec::new();
+        let mut last_glyph = None;
+        let mut x_current = x;
+        let mut width_total = 0.0;
+        for glyph in self.font.as_ref().unwrap().glyphs_for(text.chars()) {
+            let glyph = glyph.scaled(scale);
+            if let Some(last_glyph) = last_glyph {
+                x_current +=
+                    self.font
+                        .as_ref()
+                        .unwrap()
+                        .pair_kerning(scale, last_glyph, glyph.id());
+            }
+            let advance_width = glyph.h_metrics().advance_width;
+            width_total = width_total + advance_width;
+            let next_glyph = glyph.positioned(point(x_current, y) + vector(x, 0.0));
+            last_glyph = Some(next_glyph.id());
+            x_current += advance_width;
+            glyphs.push(next_glyph);
+        }
+
+        // Align
+        let horizontal_offset = match align_horizontal {
+            AlignHorizontal::Left => 0.0,
+            AlignHorizontal::Center => width_total / 2.0,
+            AlignHorizontal::Right => width_total,
+        };
+        let v_metrics = self.font.as_ref().unwrap().v_metrics(scale);
+        let line_height = v_metrics.ascent;
+        let vertical_offset = match align_vertical {
+            AlignVertical::Top => line_height,
+            AlignVertical::Center => line_height / 2.0,
+            AlignVertical::Bottom => 0.0,
+        };
+        for glyph in &mut glyphs {
+            let old_position = glyph.position();
+            let new_position = point(
+                old_position.x - horizontal_offset,
+                old_position.y + vertical_offset,
+            );
+            glyph.set_position(new_position);
+        }
+
+        // Cache glyphs
         for glyph in &glyphs {
             self.cache.as_mut().unwrap().queue_glyph(0, glyph.clone());
         }
+
+        // Store text to render
         self.texts.push(TextData {
             glyphs: glyphs.clone(),
             color,
         });
     }
 }
-impl DrawLayer for TextDrawLayer {
+impl<T> DrawLayer<T> for TextDrawLayer {
     fn setup(&mut self, device: Arc<Device>, queue: Arc<Queue>, render_pass: Arc<RenderPass>) {
         let font_data = include_bytes!("DejaVuSans.ttf");
         let font = Font::from_bytes(font_data as &[u8]).unwrap();
@@ -130,7 +178,7 @@ impl DrawLayer for TextDrawLayer {
             .vertex_shader(vs.entry_point("main").unwrap(), ())
             .viewport_state(ViewportState::viewport_dynamic_scissor_irrelevant())
             .fragment_shader(fs.entry_point("main").unwrap(), ())
-            .blend_alpha_blending()
+            .color_blend_state(ColorBlendState::default().blend_alpha())
             .build(device.clone())
             .expect("Could not build pipeline");
 
@@ -141,22 +189,7 @@ impl DrawLayer for TextDrawLayer {
         self.cache = Some(cache);
         self.cache_pixels = cache_pixels;
     }
-    fn draw(
-        &mut self,
-        command_buffer_builder: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
-        viewport: Viewport,
-    ) {
-        self.queue_text(
-            0.0,
-            100.0,
-            80.0,
-            [0.0, 1.0, 0.0, 1.0],
-            "hello, how are you?",
-        );
-        self.queue_text(50.0, 50.0, 30.0, [1.0, 1.0, 0.0, 1.0], "I am very good...");
-
-        println!("Drawing {} texts", self.texts.len());
-
+    fn draw(&mut self, gpu_interface: &mut GpuInterface, _meta: &mut Meta, _state: &mut T) {
         // update texture cache
         self.cache
             .as_mut()
@@ -176,9 +209,9 @@ impl DrawLayer for TextDrawLayer {
                     src_index += width;
                 }
             })
-            .unwrap();
+            .expect("Could not cache glyphs");
 
-        let (cache_texture, future) = ImmutableImage::from_iter(
+        let (cache_texture, _) = ImmutableImage::from_iter(
             self.cache_pixels.clone(),
             ImageDimensions::Dim2d {
                 width: CACHE_WIDTH as u32,
@@ -189,7 +222,7 @@ impl DrawLayer for TextDrawLayer {
             Format::R8_UNORM,
             self.queue.as_ref().unwrap().clone(),
         )
-        .unwrap();
+        .expect("Could not create text glyph cache texture");
 
         let sampler = Sampler::new(
             self.device.as_ref().as_mut().unwrap().clone(),
@@ -201,9 +234,10 @@ impl DrawLayer for TextDrawLayer {
                 ..Default::default()
             },
         )
-        .unwrap();
+        .expect("Could not create sampler");
 
-        let cache_texture_view = ImageView::new_default(cache_texture).unwrap();
+        let cache_texture_view =
+            ImageView::new_default(cache_texture).expect("Could not create image view");
 
         let layout = self
             .pipeline
@@ -213,9 +247,8 @@ impl DrawLayer for TextDrawLayer {
             .layout()
             .set_layouts()
             .get(0)
-            .unwrap();
+            .expect("Could not get layout");
 
-        //// Use `image_view` instead of `image_view_sampler`, since the sampler is already in the layout.
         let set = PersistentDescriptorSet::new(
             layout.clone(),
             [WriteDescriptorSet::image_view_sampler(
@@ -224,55 +257,14 @@ impl DrawLayer for TextDrawLayer {
                 sampler,
             )],
         )
-        .unwrap();
+        .expect("Could not create descriptor set");
 
-        let vertices = vec![
-            Vertex {
-                position: [0.0, 1.0],
-                tex_position: [0.0, 1.0],
-                color: [0.0, 1.0, 0.0, 1.0],
-            },
-            Vertex {
-                position: [0.0, 0.0],
-                tex_position: [0.0, 0.0],
-                color: [0.0, 1.0, 0.0, 1.0],
-            },
-            Vertex {
-                position: [1.0, 0.0],
-                tex_position: [1.0, 0.0],
-                color: [0.0, 1.0, 0.0, 1.0],
-            },
-            Vertex {
-                position: [1.0, 0.0],
-                tex_position: [1.0, 0.0],
-                color: [0.0, 1.0, 0.0, 1.0],
-            },
-            Vertex {
-                position: [1.0, 1.0],
-                tex_position: [1.0, 1.0],
-                color: [0.0, 1.0, 0.0, 1.0],
-            },
-            Vertex {
-                position: [0.0, 1.0],
-                tex_position: [0.0, 1.0],
-                color: [0.0, 1.0, 0.0, 1.0],
-            },
-        ];
-        let vertex_buffer = CpuAccessibleBuffer::from_iter(
-            self.device.as_ref().as_mut().unwrap().clone(),
-            BufferUsage {
-                vertex_buffer: true,
-                ..BufferUsage::empty()
-            },
-            false,
-            vertices,
-        )
-        .expect("Could not create buffer from iter");
+        let screen_width = gpu_interface.viewport.dimensions[0];
+        let screen_height = gpu_interface.viewport.dimensions[1];
 
-        let screen_width = viewport.dimensions[0];
-        let screen_height = viewport.dimensions[1];
-
-        command_buffer_builder
+        // Prepare command buffer for text draw calls
+        gpu_interface
+            .command_buffer_builder
             .bind_pipeline_graphics(self.pipeline.as_ref().unwrap().clone())
             .bind_descriptor_sets(
                 PipelineBindPoint::Graphics,
@@ -344,12 +336,14 @@ impl DrawLayer for TextDrawLayer {
                 text_vertices,
             )
             .expect("Could not create buffer from iter");
-            command_buffer_builder
+            gpu_interface
+                .command_buffer_builder
                 .bind_vertex_buffers(0, vertex_buffer.clone())
                 .draw(vertex_buffer.len() as u32, 1, 0, 0)
                 .unwrap();
         }
 
+        // Clear the queued texts
         self.texts.clear();
     }
 }

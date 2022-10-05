@@ -2,7 +2,14 @@ use crate::util::{
     create_framebuffers, create_instance, create_surface, create_swapchain, get_device_extensions,
     get_logical_device_and_queues, get_physical_device_and_queue_family,
 };
-use std::sync::Arc;
+use nalgebra_glm::Vec2;
+use std::{
+    cell::RefCell,
+    collections::HashSet,
+    rc::Rc,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use vulkano::{
     command_buffer::{
         AutoCommandBufferBuilder, CommandBufferUsage, PrimaryAutoCommandBuffer,
@@ -17,7 +24,7 @@ use vulkano::{
     sync::{self, FlushError, GpuFuture},
 };
 use winit::{
-    event::{Event, WindowEvent},
+    event::{ElementState, Event, MouseButton, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
 };
 
@@ -25,17 +32,41 @@ mod layers;
 mod util;
 
 pub use layers::{basic::BasicTriangleDrawLayer, text::TextDrawLayer};
+pub use winit::event::VirtualKeyCode;
 
-pub trait DrawLayer {
+pub trait DrawLayer<T> {
     fn setup(&mut self, device: Arc<Device>, queue: Arc<Queue>, render_pass: Arc<RenderPass>);
-    fn draw(
-        &mut self,
-        command_buffer_builder: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
-        viewport: Viewport,
-    );
+    fn draw(&mut self, gpu_interface: &mut GpuInterface, meta: &mut Meta, state: &mut T);
 }
 
-pub fn render(mut layers: Vec<Box<dyn DrawLayer>>) {
+pub enum AlignHorizontal {
+    Left,
+    Center,
+    Right,
+}
+pub enum AlignVertical {
+    Top,
+    Center,
+    Bottom,
+}
+
+pub struct Meta<'a> {
+    pub frames_per_second: usize,
+    pub delta_time: Duration,
+    pub mouse_position: Vec2,
+    pub is_mouse_down: bool,
+    pub is_mouse_released: bool,
+    pub keys_hold: &'a HashSet<VirtualKeyCode>,
+    pub keys_up: &'a HashSet<VirtualKeyCode>,
+    pub keys_down: &'a HashSet<VirtualKeyCode>,
+}
+
+pub struct GpuInterface<'a> {
+    pub command_buffer_builder: &'a mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
+    pub viewport: Viewport,
+}
+
+pub fn render<T: 'static>(mut state: T, mut layers: Vec<Rc<RefCell<dyn DrawLayer<T>>>>) {
     let event_loop = EventLoop::new();
 
     let instance = create_instance();
@@ -85,28 +116,100 @@ pub fn render(mut layers: Vec<Box<dyn DrawLayer>>) {
 
     // Set up render layers
     for layer in layers.iter_mut() {
-        layer.setup(device.clone(), queue.clone(), render_pass.clone());
+        layer
+            .borrow_mut()
+            // TODO: Add this to gpu interface
+            .setup(device.clone(), queue.clone(), render_pass.clone());
     }
 
     // Loop
     let mut is_swapchain_invalid = false;
     let mut previous_frame_end = Some(sync::now(device.clone()).boxed());
 
+    // Framerate management
+    let mut frame_timer = Instant::now();
+    let mut frame_second_timer = Instant::now();
+    let mut frame_counter = 0;
+    let mut frames_per_second = 0;
+
+    let mut mouse_position = Vec2::new(0.0, 0.0);
+    let mut is_mouse_down = false;
+    let mut is_mouse_released = false;
+    let mut keys_hold = HashSet::new();
+    let mut keys_down = HashSet::new();
+    let mut keys_up = HashSet::new();
+
     event_loop.run(move |event, _, control_flow| {
         match event {
             Event::WindowEvent {
-                event: WindowEvent::CloseRequested,
-                ..
-            } => {
-                *control_flow = ControlFlow::Exit;
-            }
-            Event::WindowEvent {
-                event: WindowEvent::Resized(_),
-                ..
-            } => {
-                is_swapchain_invalid = true;
-            }
+                window_id: _,
+                event,
+            } => match event {
+                WindowEvent::KeyboardInput {
+                    device_id: _,
+                    input,
+                    is_synthetic: _,
+                } => {
+                    if input.virtual_keycode.is_some() {
+                        let key = input.virtual_keycode.unwrap();
+                        let value = input.state == ElementState::Pressed;
+                        if value {
+                            keys_down.insert(key);
+                            keys_hold.insert(key);
+                        } else {
+                            keys_up.insert(key);
+                            keys_hold.remove(&key);
+                        }
+                    }
+                }
+                WindowEvent::CursorMoved {
+                    device_id: _,
+                    position,
+                    ..
+                } => {
+                    mouse_position.x = position.x as f32;
+                    mouse_position.y = position.y as f32;
+                }
+                WindowEvent::MouseInput {
+                    device_id: _,
+                    state,
+                    button,
+                    ..
+                } => match state {
+                    ElementState::Pressed => match button {
+                        MouseButton::Left => {
+                            is_mouse_down = true;
+                        }
+                        _ => (),
+                    },
+                    ElementState::Released => match button {
+                        MouseButton::Left => {
+                            is_mouse_down = false;
+                            is_mouse_released = true;
+                        }
+                        _ => (),
+                    },
+                },
+                WindowEvent::Resized(_) => {
+                    is_swapchain_invalid = true;
+                }
+                WindowEvent::CloseRequested => {
+                    *control_flow = ControlFlow::Exit;
+                }
+                _ => (),
+            },
             Event::RedrawEventsCleared => {
+                // Frame timers
+                frame_counter = frame_counter + 1;
+                let time_since_frame_counter_reset = Instant::now() - frame_second_timer;
+                if time_since_frame_counter_reset.as_millis() >= 1000 {
+                    frame_second_timer = Instant::now();
+                    frames_per_second = frame_counter;
+                    frame_counter = 0;
+                }
+                let delta_time = Instant::now() - frame_timer;
+                frame_timer = Instant::now();
+
                 let dimensions = surface.window().inner_size();
                 if dimensions.width == 0 || dimensions.height == 0 {
                     return;
@@ -167,8 +270,27 @@ pub fn render(mut layers: Vec<Box<dyn DrawLayer>>) {
                     .unwrap()
                     .set_viewport(0, [viewport.clone()]);
 
+                // Construct state for current frame
+                let mut meta = Meta {
+                    frames_per_second,
+                    delta_time,
+                    mouse_position,
+                    is_mouse_down,
+                    is_mouse_released,
+                    keys_hold: &keys_hold,
+                    keys_down: &keys_down,
+                    keys_up: &keys_up,
+                };
+
+                let mut gpu_interface = GpuInterface {
+                    command_buffer_builder: &mut command_buffer_builder,
+                    viewport: viewport.clone(),
+                };
+
                 for layer in layers.iter_mut() {
-                    layer.draw(&mut command_buffer_builder, viewport.clone());
+                    layer
+                        .borrow_mut()
+                        .draw(&mut gpu_interface, &mut meta, &mut state);
                 }
 
                 command_buffer_builder.end_render_pass().unwrap();
@@ -202,6 +324,11 @@ pub fn render(mut layers: Vec<Box<dyn DrawLayer>>) {
                         panic!("Failed to flush future: {:?}", error);
                     }
                 }
+
+                // Reset Meta
+                is_mouse_released = false;
+                keys_up.clear();
+                keys_down.clear();
             }
             _ => (),
         }
