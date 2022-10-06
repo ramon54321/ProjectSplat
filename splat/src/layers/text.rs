@@ -1,7 +1,7 @@
 use crate::{AlignHorizontal, AlignVertical, DrawLayer, GpuInterface, Meta};
 use bytemuck::{Pod, Zeroable};
 use rusttype::{gpu_cache::Cache, point, Font, PositionedGlyph, Rect, Scale};
-use std::{fmt::Debug, sync::Arc};
+use std::{collections::HashMap, fmt::Debug, rc::Rc, sync::Arc};
 use vulkano::{
     buffer::{BufferUsage, CpuAccessibleBuffer, TypedBufferAccess},
     descriptor_set::{PersistentDescriptorSet, WriteDescriptorSet},
@@ -22,25 +22,19 @@ use vulkano::{
     sampler::{Filter, Sampler, SamplerAddressMode, SamplerCreateInfo, SamplerMipmapMode},
 };
 
-const CACHE_WIDTH: usize = 256;
-const CACHE_HEIGHT: usize = 256;
+const TEXT_GLYPH_CACHE_LIMIT: usize = 128;
+const PIXEL_CACHE_WIDTH: usize = 256;
+const PIXEL_CACHE_HEIGHT: usize = 256;
+
+type GlyphCacheEntry = (Rc<Vec<PositionedGlyph<'static>>>, f32, f32);
 
 struct TextData {
     x: f32,
     y: f32,
-    glyphs: Vec<PositionedGlyph<'static>>,
+    glyphs: Rc<Vec<PositionedGlyph<'static>>>,
     color: [f32; 4],
 }
 
-#[derive(Default)]
-pub struct TextDrawLayer {
-    device: Option<Arc<Device>>,
-    pipeline: Option<Arc<GraphicsPipeline>>,
-    descriptor_set: Option<Arc<PersistentDescriptorSet>>,
-    font: Option<Font<'static>>,
-    cache: Option<Cache<'static>>,
-    requests: Vec<TextEnqueueRequest>,
-}
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Zeroable, Pod)]
 struct Vertex {
@@ -57,6 +51,18 @@ pub struct TextEnqueueRequest {
     pub align_vertical: AlignVertical,
     pub color: [f32; 4],
     pub text: String,
+    pub should_cache: bool,
+}
+
+#[derive(Default)]
+pub struct TextDrawLayer {
+    device: Option<Arc<Device>>,
+    pipeline: Option<Arc<GraphicsPipeline>>,
+    descriptor_set: Option<Arc<PersistentDescriptorSet>>,
+    font: Option<Font<'static>>,
+    cache: Option<Cache<'static>>,
+    requests: Vec<TextEnqueueRequest>,
+    text_glyph_cache: HashMap<String, GlyphCacheEntry>,
 }
 impl TextDrawLayer {
     pub fn enqueue_text(&mut self, request: TextEnqueueRequest) {
@@ -128,8 +134,8 @@ impl<T> DrawLayer<T> for TextDrawLayer {
         let (cache_texture, _) = ImmutableImage::from_iter(
             cache_pixels.clone(),
             ImageDimensions::Dim2d {
-                width: CACHE_WIDTH as u32,
-                height: CACHE_HEIGHT as u32,
+                width: PIXEL_CACHE_WIDTH as u32,
+                height: PIXEL_CACHE_HEIGHT as u32,
                 array_layers: 1,
             },
             MipmapsCount::One,
@@ -194,7 +200,11 @@ impl<T> DrawLayer<T> for TextDrawLayer {
         #[cfg(debug_vulkan_text)]
         submit_debug_cache_texture_draw(gpu_interface, self.device.as_ref().unwrap().clone());
 
-        let text_datas = build_text_data_from_requests(&self.requests, self.font.as_ref().unwrap());
+        let text_datas = build_text_data_from_requests(
+            &self.requests,
+            &mut self.text_glyph_cache,
+            self.font.as_ref().unwrap(),
+        );
         self.requests.clear();
 
         let vertices = build_vertices_from_text_datas(
@@ -214,7 +224,7 @@ impl<T> DrawLayer<T> for TextDrawLayer {
 
 fn create_glyph_cache_and_pixels<'a>(font: Font<'a>) -> (Cache<'a>, Vec<u8>) {
     let mut cache = Cache::builder()
-        .dimensions(CACHE_WIDTH as u32, CACHE_HEIGHT as u32)
+        .dimensions(PIXEL_CACHE_WIDTH as u32, PIXEL_CACHE_HEIGHT as u32)
         .scale_tolerance(5.0)
         .position_tolerance(5.0)
         .build();
@@ -231,12 +241,12 @@ fn create_glyph_cache_and_pixels<'a>(font: Font<'a>) -> (Cache<'a>, Vec<u8>) {
         cache.queue_glyph(0, glyph.clone());
     }
 
-    let mut pixels = vec![0; CACHE_WIDTH * CACHE_HEIGHT];
+    let mut pixels = vec![0; PIXEL_CACHE_WIDTH * PIXEL_CACHE_HEIGHT];
     cache
         .cache_queued(|rect, src_data| {
             let width = (rect.max.x - rect.min.x) as usize;
             let height = (rect.max.y - rect.min.y) as usize;
-            let mut dst_index = rect.min.y as usize * CACHE_WIDTH + rect.min.x as usize;
+            let mut dst_index = rect.min.y as usize * PIXEL_CACHE_WIDTH + rect.min.x as usize;
             let mut src_index = 0;
 
             for _ in 0..height {
@@ -244,7 +254,7 @@ fn create_glyph_cache_and_pixels<'a>(font: Font<'a>) -> (Cache<'a>, Vec<u8>) {
                 let src_slice = &src_data[src_index..src_index + width];
                 dst_slice.copy_from_slice(src_slice);
 
-                dst_index += CACHE_WIDTH;
+                dst_index += PIXEL_CACHE_WIDTH;
                 src_index += width;
             }
         })
@@ -255,12 +265,28 @@ fn create_glyph_cache_and_pixels<'a>(font: Font<'a>) -> (Cache<'a>, Vec<u8>) {
 
 fn build_text_data_from_requests(
     requests: &Vec<TextEnqueueRequest>,
+    text_glyph_cache: &mut HashMap<String, GlyphCacheEntry>,
     font: &Font<'static>,
 ) -> Vec<TextData> {
     let mut texts = Vec::with_capacity(requests.len());
     for i in 0..requests.len() {
         let request = &requests[i];
         let scale = Scale::uniform(24.0);
+
+        // Check if glyphs for this text is cached
+        if request.should_cache {
+            if let Some((glyphs, horizontal_offset, vertical_offset)) =
+                text_glyph_cache.get(&request.text)
+            {
+                texts.push(TextData {
+                    x: request.x - horizontal_offset,
+                    y: request.y + vertical_offset,
+                    glyphs: glyphs.clone(),
+                    color: request.color,
+                });
+                continue;
+            }
+        }
 
         // Alignment
         let v_metrics = font.v_metrics(scale);
@@ -279,7 +305,7 @@ fn build_text_data_from_requests(
             let glyph = font.glyph(char);
             let glyph = glyph.scaled(scale);
             let advance_width = glyph.h_metrics().advance_width;
-            let next_glyph = glyph.positioned(point(x_current, vertical_offset));
+            let next_glyph = glyph.positioned(point(x_current, 0.0));
             x_current += advance_width;
             width_total = width_total + advance_width;
             glyphs.push(next_glyph);
@@ -292,13 +318,30 @@ fn build_text_data_from_requests(
             AlignHorizontal::Right => width_total,
         };
 
+        // Reference count glyphs to avoid clone in cache
+        let glyphs = Rc::new(glyphs);
+
         // Store
         texts.push(TextData {
             x: request.x - horizontal_offset,
-            y: request.y,
+            y: request.y + vertical_offset,
             glyphs: glyphs.clone(),
             color: request.color,
         });
+
+        if request.should_cache {
+            // Reset cache if too large
+            if text_glyph_cache.len() >= TEXT_GLYPH_CACHE_LIMIT {
+                text_glyph_cache.clear();
+                println!("Resetting Cache");
+            }
+
+            // Cache glyphs
+            text_glyph_cache.insert(
+                request.text.clone(),
+                (glyphs, horizontal_offset, vertical_offset),
+            );
+        }
     }
     texts
 }
@@ -385,6 +428,7 @@ fn submit_vertices_draw(
     }
 }
 
+#[allow(dead_code)]
 fn submit_debug_cache_texture_draw(gpu_interface: &mut GpuInterface, device: Arc<Device>) {
     let mut vertices = Vec::new();
     vertices.push(Vertex {
