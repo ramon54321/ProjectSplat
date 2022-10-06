@@ -39,7 +39,6 @@ pub struct TextDrawLayer {
     descriptor_set: Option<Arc<PersistentDescriptorSet>>,
     font: Option<Font<'static>>,
     cache: Option<Cache<'static>>,
-    texts: Vec<TextData>,
     requests: Vec<TextEnqueueRequest>,
 }
 #[repr(C)]
@@ -192,173 +191,24 @@ impl<T> DrawLayer<T> for TextDrawLayer {
             );
 
         // Debug cache texture
-        //{
-        //let mut debug_vertices = Vec::new();
-        //debug_vertices.push(Vertex {
-        //position: [0.0, 1.0],
-        //tex_position: [0.0, 1.0],
-        //color: [1.0, 1.0, 1.0, 1.0],
-        //});
-        //debug_vertices.push(Vertex {
-        //position: [0.0, 0.0],
-        //tex_position: [0.0, 0.0],
-        //color: [1.0, 1.0, 1.0, 1.0],
-        //});
-        //debug_vertices.push(Vertex {
-        //position: [1.0, 0.0],
-        //tex_position: [1.0, 0.0],
-        //color: [1.0, 1.0, 1.0, 1.0],
-        //});
-        //debug_vertices.push(Vertex {
-        //position: [1.0, 0.0],
-        //tex_position: [1.0, 0.0],
-        //color: [1.0, 1.0, 1.0, 1.0],
-        //});
-        //debug_vertices.push(Vertex {
-        //position: [1.0, 1.0],
-        //tex_position: [1.0, 1.0],
-        //color: [1.0, 1.0, 1.0, 1.0],
-        //});
-        //debug_vertices.push(Vertex {
-        //position: [0.0, 1.0],
-        //tex_position: [0.0, 1.0],
-        //color: [1.0, 1.0, 1.0, 1.0],
-        //});
-        //let vertex_buffer = CpuAccessibleBuffer::from_iter(
-        //self.device.as_ref().as_mut().unwrap().clone(),
-        //BufferUsage {
-        //vertex_buffer: true,
-        //..BufferUsage::empty()
-        //},
-        //false,
-        //debug_vertices,
-        //)
-        //.expect("Could not create buffer from iter");
-        //gpu_interface
-        //.command_buffer_builder
-        //.bind_vertex_buffers(0, vertex_buffer.clone())
-        //.draw(vertex_buffer.len() as u32, 1, 0, 0)
-        //.unwrap();
-        //}
+        #[cfg(debug_vulkan_text)]
+        submit_debug_cache_texture_draw(gpu_interface, self.device.as_ref().unwrap().clone());
 
-        for i in 0..self.requests.len() {
-            let request = &self.requests[i];
-            let font = self.font.as_ref().unwrap();
-            let scale = Scale::uniform(24.0);
-
-            // Alignment
-            let v_metrics = font.v_metrics(scale);
-            let line_height = v_metrics.ascent;
-            let vertical_offset = match request.align_vertical {
-                AlignVertical::Top => line_height,
-                AlignVertical::Center => line_height / 2.0,
-                AlignVertical::Bottom => 0.0,
-            };
-
-            // Place glyphs
-            let mut glyphs = Vec::with_capacity(request.text.len());
-            let mut x_current = 0.0;
-            let mut width_total = 0.0;
-            for char in request.text.chars() {
-                let glyph = font.glyph(char);
-                let glyph = glyph.scaled(scale);
-                let advance_width = glyph.h_metrics().advance_width;
-                let next_glyph = glyph.positioned(point(x_current, vertical_offset));
-                x_current += advance_width;
-                width_total = width_total + advance_width;
-                glyphs.push(next_glyph);
-            }
-
-            // Alignment
-            let horizontal_offset = match request.align_horizontal {
-                AlignHorizontal::Left => 0.0,
-                AlignHorizontal::Center => width_total / 2.0,
-                AlignHorizontal::Right => width_total,
-            };
-
-            // Store
-            self.texts.push(TextData {
-                x: request.x - horizontal_offset,
-                y: request.y,
-                glyphs: glyphs.clone(),
-                color: request.color,
-            });
-        }
+        let text_datas = build_text_data_from_requests(&self.requests, self.font.as_ref().unwrap());
         self.requests.clear();
 
-        let mut text_vertices: Vec<Vertex> = Vec::with_capacity(1000);
-        let cache = self.cache.as_ref().unwrap();
-        for text_index in 0..self.texts.len() {
-            let text = &self.texts[text_index];
-            for glyph_index in 0..text.glyphs.len() {
-                let glyph = &text.glyphs[glyph_index];
-                if let Ok(Some((uv_rect, screen_rect))) = cache.rect_for(0, glyph) {
-                    let gl_rect = Rect {
-                        min: point(
-                            ((screen_rect.min.x as f32 + text.x) / screen_width as f32 - 0.5) * 2.0,
-                            ((screen_rect.min.y as f32 + text.y) / screen_height as f32 - 0.5)
-                                * 2.0,
-                        ),
-                        max: point(
-                            ((screen_rect.max.x as f32 + text.x) / screen_width as f32 - 0.5) * 2.0,
-                            ((screen_rect.max.y as f32 + text.y) / screen_height as f32 - 0.5)
-                                * 2.0,
-                        ),
-                    };
-                    text_vertices.push(Vertex {
-                        position: [gl_rect.min.x, gl_rect.max.y],
-                        tex_position: [uv_rect.min.x, uv_rect.max.y],
-                        color: text.color,
-                    });
-                    text_vertices.push(Vertex {
-                        position: [gl_rect.min.x, gl_rect.min.y],
-                        tex_position: [uv_rect.min.x, uv_rect.min.y],
-                        color: text.color,
-                    });
-                    text_vertices.push(Vertex {
-                        position: [gl_rect.max.x, gl_rect.min.y],
-                        tex_position: [uv_rect.max.x, uv_rect.min.y],
-                        color: text.color,
-                    });
-                    text_vertices.push(Vertex {
-                        position: [gl_rect.max.x, gl_rect.min.y],
-                        tex_position: [uv_rect.max.x, uv_rect.min.y],
-                        color: text.color,
-                    });
-                    text_vertices.push(Vertex {
-                        position: [gl_rect.max.x, gl_rect.max.y],
-                        tex_position: [uv_rect.max.x, uv_rect.max.y],
-                        color: text.color,
-                    });
-                    text_vertices.push(Vertex {
-                        position: [gl_rect.min.x, gl_rect.max.y],
-                        tex_position: [uv_rect.min.x, uv_rect.max.y],
-                        color: text.color,
-                    });
-                };
-            }
-        }
+        let vertices = build_vertices_from_text_datas(
+            &text_datas,
+            self.cache.as_ref().unwrap(),
+            screen_width,
+            screen_height,
+        );
 
-        if text_vertices.len() > 0 {
-            let vertex_buffer = CpuAccessibleBuffer::from_iter(
-                self.device.as_ref().as_mut().unwrap().clone(),
-                BufferUsage {
-                    vertex_buffer: true,
-                    ..BufferUsage::empty()
-                },
-                false,
-                text_vertices,
-            )
-            .expect("Could not create buffer from iter");
-            gpu_interface
-                .command_buffer_builder
-                .bind_vertex_buffers(0, vertex_buffer.clone())
-                .draw(vertex_buffer.len() as u32, 1, 0, 0)
-                .unwrap();
-        }
-
-        // Clear the queued texts
-        self.texts.clear();
+        submit_vertices_draw(
+            gpu_interface,
+            self.device.as_ref().unwrap().clone(),
+            vertices,
+        );
     }
 }
 
@@ -401,4 +251,185 @@ fn create_glyph_cache_and_pixels<'a>(font: Font<'a>) -> (Cache<'a>, Vec<u8>) {
         .expect("Could not cache glyphs");
 
     (cache, pixels)
+}
+
+fn build_text_data_from_requests(
+    requests: &Vec<TextEnqueueRequest>,
+    font: &Font<'static>,
+) -> Vec<TextData> {
+    let mut texts = Vec::with_capacity(requests.len());
+    for i in 0..requests.len() {
+        let request = &requests[i];
+        let scale = Scale::uniform(24.0);
+
+        // Alignment
+        let v_metrics = font.v_metrics(scale);
+        let line_height = v_metrics.ascent;
+        let vertical_offset = match request.align_vertical {
+            AlignVertical::Top => line_height,
+            AlignVertical::Center => line_height / 2.0,
+            AlignVertical::Bottom => 0.0,
+        };
+
+        // Place glyphs
+        let mut glyphs = Vec::with_capacity(request.text.len());
+        let mut x_current = 0.0;
+        let mut width_total = 0.0;
+        for char in request.text.chars() {
+            let glyph = font.glyph(char);
+            let glyph = glyph.scaled(scale);
+            let advance_width = glyph.h_metrics().advance_width;
+            let next_glyph = glyph.positioned(point(x_current, vertical_offset));
+            x_current += advance_width;
+            width_total = width_total + advance_width;
+            glyphs.push(next_glyph);
+        }
+
+        // Alignment
+        let horizontal_offset = match request.align_horizontal {
+            AlignHorizontal::Left => 0.0,
+            AlignHorizontal::Center => width_total / 2.0,
+            AlignHorizontal::Right => width_total,
+        };
+
+        // Store
+        texts.push(TextData {
+            x: request.x - horizontal_offset,
+            y: request.y,
+            glyphs: glyphs.clone(),
+            color: request.color,
+        });
+    }
+    texts
+}
+
+fn build_vertices_from_text_datas(
+    texts: &Vec<TextData>,
+    cache: &Cache,
+    screen_width: f32,
+    screen_height: f32,
+) -> Vec<Vertex> {
+    let mut vertices: Vec<Vertex> = Vec::with_capacity(1000);
+    for text_index in 0..texts.len() {
+        let text = &texts[text_index];
+        for glyph_index in 0..text.glyphs.len() {
+            let glyph = &text.glyphs[glyph_index];
+            if let Ok(Some((uv_rect, screen_rect))) = cache.rect_for(0, glyph) {
+                let gl_rect = Rect {
+                    min: point(
+                        ((screen_rect.min.x as f32 + text.x) / screen_width - 0.5) * 2.0,
+                        ((screen_rect.min.y as f32 + text.y) / screen_height - 0.5) * 2.0,
+                    ),
+                    max: point(
+                        ((screen_rect.max.x as f32 + text.x) / screen_width - 0.5) * 2.0,
+                        ((screen_rect.max.y as f32 + text.y) / screen_height - 0.5) * 2.0,
+                    ),
+                };
+                vertices.push(Vertex {
+                    position: [gl_rect.min.x, gl_rect.max.y],
+                    tex_position: [uv_rect.min.x, uv_rect.max.y],
+                    color: text.color,
+                });
+                vertices.push(Vertex {
+                    position: [gl_rect.min.x, gl_rect.min.y],
+                    tex_position: [uv_rect.min.x, uv_rect.min.y],
+                    color: text.color,
+                });
+                vertices.push(Vertex {
+                    position: [gl_rect.max.x, gl_rect.min.y],
+                    tex_position: [uv_rect.max.x, uv_rect.min.y],
+                    color: text.color,
+                });
+                vertices.push(Vertex {
+                    position: [gl_rect.max.x, gl_rect.min.y],
+                    tex_position: [uv_rect.max.x, uv_rect.min.y],
+                    color: text.color,
+                });
+                vertices.push(Vertex {
+                    position: [gl_rect.max.x, gl_rect.max.y],
+                    tex_position: [uv_rect.max.x, uv_rect.max.y],
+                    color: text.color,
+                });
+                vertices.push(Vertex {
+                    position: [gl_rect.min.x, gl_rect.max.y],
+                    tex_position: [uv_rect.min.x, uv_rect.max.y],
+                    color: text.color,
+                });
+            };
+        }
+    }
+    vertices
+}
+
+fn submit_vertices_draw(
+    gpu_interface: &mut GpuInterface,
+    device: Arc<Device>,
+    vertices: Vec<Vertex>,
+) {
+    if vertices.len() > 0 {
+        let vertex_buffer = CpuAccessibleBuffer::from_iter(
+            device,
+            BufferUsage {
+                vertex_buffer: true,
+                ..BufferUsage::empty()
+            },
+            false,
+            vertices,
+        )
+        .expect("Could not create buffer from iter");
+        gpu_interface
+            .command_buffer_builder
+            .bind_vertex_buffers(0, vertex_buffer.clone())
+            .draw(vertex_buffer.len() as u32, 1, 0, 0)
+            .unwrap();
+    }
+}
+
+fn submit_debug_cache_texture_draw(gpu_interface: &mut GpuInterface, device: Arc<Device>) {
+    let mut vertices = Vec::new();
+    vertices.push(Vertex {
+        position: [0.0, 1.0],
+        tex_position: [0.0, 1.0],
+        color: [1.0, 1.0, 1.0, 1.0],
+    });
+    vertices.push(Vertex {
+        position: [0.0, 0.0],
+        tex_position: [0.0, 0.0],
+        color: [1.0, 1.0, 1.0, 1.0],
+    });
+    vertices.push(Vertex {
+        position: [1.0, 0.0],
+        tex_position: [1.0, 0.0],
+        color: [1.0, 1.0, 1.0, 1.0],
+    });
+    vertices.push(Vertex {
+        position: [1.0, 0.0],
+        tex_position: [1.0, 0.0],
+        color: [1.0, 1.0, 1.0, 1.0],
+    });
+    vertices.push(Vertex {
+        position: [1.0, 1.0],
+        tex_position: [1.0, 1.0],
+        color: [1.0, 1.0, 1.0, 1.0],
+    });
+    vertices.push(Vertex {
+        position: [0.0, 1.0],
+        tex_position: [0.0, 1.0],
+        color: [1.0, 1.0, 1.0, 1.0],
+    });
+    let vertex_buffer = CpuAccessibleBuffer::from_iter(
+        device,
+        BufferUsage {
+            vertex_buffer: true,
+            ..BufferUsage::empty()
+        },
+        false,
+        vertices,
+    )
+    .expect("Could not create buffer from iter");
+    gpu_interface
+        .command_buffer_builder
+        .bind_vertex_buffers(0, vertex_buffer.clone())
+        .draw(vertex_buffer.len() as u32, 1, 0, 0)
+        .unwrap();
 }
