@@ -1,7 +1,7 @@
 use crate::{AlignHorizontal, AlignVertical, DrawLayer, GpuInterface, Meta};
 use bytemuck::{Pod, Zeroable};
-use rusttype::{gpu_cache::Cache, point, vector, Font, PositionedGlyph, Rect, Scale};
-use std::{fmt::Debug, sync::Arc};
+use rusttype::{gpu_cache::Cache, point, vector, Font, Glyph, PositionedGlyph, Rect, Scale};
+use std::{collections::HashMap, fmt::Debug, sync::Arc};
 use vulkano::{
     buffer::{BufferUsage, CpuAccessibleBuffer, TypedBufferAccess},
     descriptor_set::{PersistentDescriptorSet, WriteDescriptorSet},
@@ -61,21 +61,16 @@ impl TextDrawLayer {
         // Place glyphs
         let font = self.font.as_ref().unwrap();
         let scale = Scale::uniform(24.0);
-        let mut glyphs = Vec::new();
-        let mut last_glyph = None;
+        let mut glyphs = Vec::with_capacity(text.len());
         let mut x_current = x;
         let mut width_total = 0.0;
         for char in text.chars() {
             let glyph = font.glyph(char);
             let glyph = glyph.scaled(scale);
-            if let Some(last_glyph) = last_glyph {
-                x_current += font.pair_kerning(scale, last_glyph, glyph.id());
-            }
             let advance_width = glyph.h_metrics().advance_width;
-            width_total = width_total + advance_width;
-            let next_glyph = glyph.positioned(point(x_current, y) + vector(x, 0.0));
-            last_glyph = Some(next_glyph.id());
+            let next_glyph = glyph.positioned(point(x_current + x, y));
             x_current += advance_width;
+            width_total = width_total + advance_width;
             glyphs.push(next_glyph);
         }
 
@@ -367,7 +362,8 @@ fn create_glyph_cache_and_pixels<'a>(font: Font<'a>) -> (Cache<'a>, Vec<u8>) {
         .build();
 
     let glyphs = font.glyphs_for(
-        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.,;:!@#$%^&*()-=1234567890`~/".chars(),
+        " abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.,;:!@#$%^&*()[]{}?-=1234567890`~/"
+            .chars(),
     );
 
     let scale = Scale::uniform(24.0);
