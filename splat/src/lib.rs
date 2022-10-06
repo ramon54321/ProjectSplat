@@ -52,6 +52,7 @@ pub enum AlignVertical {
 
 pub struct Meta<'a> {
     pub frames_per_second: usize,
+    pub layer_durations: Vec<Duration>,
     pub delta_time: Duration,
     pub mouse_position: Vec2,
     pub is_mouse_down: bool,
@@ -127,6 +128,7 @@ pub fn render<T: 'static>(mut state: T, mut layers: Vec<Rc<RefCell<dyn DrawLayer
     let mut previous_frame_end = Some(sync::now(device.clone()).boxed());
 
     // Framerate management
+    let mut layer_durations = Vec::new();
     let mut frame_timer = Instant::now();
     let mut frame_second_timer = Instant::now();
     let mut frame_counter = 0;
@@ -273,6 +275,7 @@ pub fn render<T: 'static>(mut state: T, mut layers: Vec<Rc<RefCell<dyn DrawLayer
                 // Construct state for current frame
                 let mut meta = Meta {
                     frames_per_second,
+                    layer_durations: layer_durations.clone(),
                     delta_time,
                     mouse_position,
                     is_mouse_down,
@@ -287,10 +290,17 @@ pub fn render<T: 'static>(mut state: T, mut layers: Vec<Rc<RefCell<dyn DrawLayer
                     viewport: viewport.clone(),
                 };
 
+                // Draw each layer
+                layer_durations.clear();
                 for layer in layers.iter_mut() {
+                    let timer = Instant::now();
+
                     layer
                         .borrow_mut()
                         .draw(&mut gpu_interface, &mut meta, &mut state);
+
+                    let duration = Instant::now() - timer;
+                    layer_durations.push(duration);
                 }
 
                 command_buffer_builder.end_render_pass().unwrap();

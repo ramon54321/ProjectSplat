@@ -22,8 +22,8 @@ use vulkano::{
     sampler::{Filter, Sampler, SamplerAddressMode, SamplerCreateInfo, SamplerMipmapMode},
 };
 
-const CACHE_WIDTH: usize = 1024;
-const CACHE_HEIGHT: usize = 1024;
+const CACHE_WIDTH: usize = 256;
+const CACHE_HEIGHT: usize = 256;
 
 struct TextData {
     glyphs: Vec<PositionedGlyph<'static>>,
@@ -33,11 +33,10 @@ struct TextData {
 #[derive(Default)]
 pub struct TextDrawLayer {
     device: Option<Arc<Device>>,
-    queue: Option<Arc<Queue>>,
     pipeline: Option<Arc<GraphicsPipeline>>,
+    descriptor_set: Option<Arc<PersistentDescriptorSet>>,
     font: Option<Font<'static>>,
     cache: Option<Cache<'static>>,
-    cache_pixels: Vec<u8>,
     texts: Vec<TextData>,
 }
 #[repr(C)]
@@ -60,20 +59,17 @@ impl TextDrawLayer {
         text: &str,
     ) {
         // Place glyphs
-        let scale = Scale::uniform(size);
-
+        let font = self.font.as_ref().unwrap();
+        let scale = Scale::uniform(24.0);
         let mut glyphs = Vec::new();
         let mut last_glyph = None;
         let mut x_current = x;
         let mut width_total = 0.0;
-        for glyph in self.font.as_ref().unwrap().glyphs_for(text.chars()) {
+        for char in text.chars() {
+            let glyph = font.glyph(char);
             let glyph = glyph.scaled(scale);
             if let Some(last_glyph) = last_glyph {
-                x_current +=
-                    self.font
-                        .as_ref()
-                        .unwrap()
-                        .pair_kerning(scale, last_glyph, glyph.id());
+                x_current += font.pair_kerning(scale, last_glyph, glyph.id());
             }
             let advance_width = glyph.h_metrics().advance_width;
             width_total = width_total + advance_width;
@@ -105,11 +101,6 @@ impl TextDrawLayer {
             glyph.set_position(new_position);
         }
 
-        // Cache glyphs
-        for glyph in &glyphs {
-            self.cache.as_mut().unwrap().queue_glyph(0, glyph.clone());
-        }
-
         // Store text to render
         self.texts.push(TextData {
             glyphs: glyphs.clone(),
@@ -121,10 +112,7 @@ impl<T> DrawLayer<T> for TextDrawLayer {
     fn setup(&mut self, device: Arc<Device>, queue: Arc<Queue>, render_pass: Arc<RenderPass>) {
         let font_data = include_bytes!("DejaVuSans.ttf");
         let font = Font::from_bytes(font_data as &[u8]).unwrap();
-        let cache = Cache::builder()
-            .dimensions(CACHE_WIDTH as u32, CACHE_HEIGHT as u32)
-            .build();
-        let cache_pixels = vec![0; CACHE_WIDTH * CACHE_HEIGHT];
+        let (cache, cache_pixels) = create_glyph_cache_and_pixels(font.clone());
 
         mod vs {
             vulkano_shaders::shader! {
@@ -182,37 +170,8 @@ impl<T> DrawLayer<T> for TextDrawLayer {
             .build(device.clone())
             .expect("Could not build pipeline");
 
-        self.device = Some(device);
-        self.queue = Some(queue);
-        self.pipeline = Some(pipeline);
-        self.font = Some(font);
-        self.cache = Some(cache);
-        self.cache_pixels = cache_pixels;
-    }
-    fn draw(&mut self, gpu_interface: &mut GpuInterface, _meta: &mut Meta, _state: &mut T) {
-        // update texture cache
-        self.cache
-            .as_mut()
-            .unwrap()
-            .cache_queued(|rect, src_data| {
-                let width = (rect.max.x - rect.min.x) as usize;
-                let height = (rect.max.y - rect.min.y) as usize;
-                let mut dst_index = rect.min.y as usize * CACHE_WIDTH + rect.min.x as usize;
-                let mut src_index = 0;
-
-                for _ in 0..height {
-                    let dst_slice = &mut self.cache_pixels[dst_index..dst_index + width];
-                    let src_slice = &src_data[src_index..src_index + width];
-                    dst_slice.copy_from_slice(src_slice);
-
-                    dst_index += CACHE_WIDTH;
-                    src_index += width;
-                }
-            })
-            .expect("Could not cache glyphs");
-
         let (cache_texture, _) = ImmutableImage::from_iter(
-            self.cache_pixels.clone(),
+            cache_pixels.clone(),
             ImageDimensions::Dim2d {
                 width: CACHE_WIDTH as u32,
                 height: CACHE_HEIGHT as u32,
@@ -220,12 +179,12 @@ impl<T> DrawLayer<T> for TextDrawLayer {
             },
             MipmapsCount::One,
             Format::R8_UNORM,
-            self.queue.as_ref().unwrap().clone(),
+            queue.clone(),
         )
         .expect("Could not create text glyph cache texture");
 
         let sampler = Sampler::new(
-            self.device.as_ref().as_mut().unwrap().clone(),
+            device.clone(),
             SamplerCreateInfo {
                 min_filter: Filter::Linear,
                 mag_filter: Filter::Linear,
@@ -237,13 +196,9 @@ impl<T> DrawLayer<T> for TextDrawLayer {
         .expect("Could not create sampler");
 
         let cache_texture_view =
-            ImageView::new_default(cache_texture).expect("Could not create image view");
+            ImageView::new_default(cache_texture.clone()).expect("Could not create image view");
 
-        let layout = self
-            .pipeline
-            .as_ref()
-            .as_mut()
-            .unwrap()
+        let layout = pipeline
             .layout()
             .set_layouts()
             .get(0)
@@ -259,6 +214,13 @@ impl<T> DrawLayer<T> for TextDrawLayer {
         )
         .expect("Could not create descriptor set");
 
+        self.device = Some(device);
+        self.pipeline = Some(pipeline);
+        self.font = Some(font);
+        self.cache = Some(cache);
+        self.descriptor_set = Some(set);
+    }
+    fn draw(&mut self, gpu_interface: &mut GpuInterface, _meta: &mut Meta, _state: &mut T) {
         let screen_width = gpu_interface.viewport.dimensions[0];
         let screen_height = gpu_interface.viewport.dimensions[1];
 
@@ -270,15 +232,66 @@ impl<T> DrawLayer<T> for TextDrawLayer {
                 PipelineBindPoint::Graphics,
                 self.pipeline.as_ref().as_mut().unwrap().layout().clone(),
                 0,
-                set.clone(),
+                self.descriptor_set.as_ref().unwrap().clone(),
             );
 
-        for text in self.texts.iter() {
-            let mut text_vertices = Vec::new();
-            for glyph in text.glyphs.iter() {
-                if let Ok(Some((uv_rect, screen_rect))) =
-                    self.cache.as_ref().unwrap().rect_for(0, glyph)
-                {
+        // Debug cache texture
+        //{
+        //let mut debug_vertices = Vec::new();
+        //debug_vertices.push(Vertex {
+        //position: [0.0, 1.0],
+        //tex_position: [0.0, 1.0],
+        //color: [1.0, 1.0, 1.0, 1.0],
+        //});
+        //debug_vertices.push(Vertex {
+        //position: [0.0, 0.0],
+        //tex_position: [0.0, 0.0],
+        //color: [1.0, 1.0, 1.0, 1.0],
+        //});
+        //debug_vertices.push(Vertex {
+        //position: [1.0, 0.0],
+        //tex_position: [1.0, 0.0],
+        //color: [1.0, 1.0, 1.0, 1.0],
+        //});
+        //debug_vertices.push(Vertex {
+        //position: [1.0, 0.0],
+        //tex_position: [1.0, 0.0],
+        //color: [1.0, 1.0, 1.0, 1.0],
+        //});
+        //debug_vertices.push(Vertex {
+        //position: [1.0, 1.0],
+        //tex_position: [1.0, 1.0],
+        //color: [1.0, 1.0, 1.0, 1.0],
+        //});
+        //debug_vertices.push(Vertex {
+        //position: [0.0, 1.0],
+        //tex_position: [0.0, 1.0],
+        //color: [1.0, 1.0, 1.0, 1.0],
+        //});
+        //let vertex_buffer = CpuAccessibleBuffer::from_iter(
+        //self.device.as_ref().as_mut().unwrap().clone(),
+        //BufferUsage {
+        //vertex_buffer: true,
+        //..BufferUsage::empty()
+        //},
+        //false,
+        //debug_vertices,
+        //)
+        //.expect("Could not create buffer from iter");
+        //gpu_interface
+        //.command_buffer_builder
+        //.bind_vertex_buffers(0, vertex_buffer.clone())
+        //.draw(vertex_buffer.len() as u32, 1, 0, 0)
+        //.unwrap();
+        //}
+
+        let mut text_vertices: Vec<Vertex> = Vec::with_capacity(1000);
+        let cache = self.cache.as_ref().unwrap();
+        for text_index in 0..self.texts.len() {
+            let text = &self.texts[text_index];
+            for glyph_index in 0..text.glyphs.len() {
+                let glyph = &text.glyphs[glyph_index];
+                if let Ok(Some((uv_rect, screen_rect))) = cache.rect_for(0, glyph) {
                     let gl_rect = Rect {
                         min: point(
                             (screen_rect.min.x as f32 / screen_width as f32 - 0.5) * 2.0,
@@ -289,43 +302,41 @@ impl<T> DrawLayer<T> for TextDrawLayer {
                             (screen_rect.max.y as f32 / screen_height as f32 - 0.5) * 2.0,
                         ),
                     };
-                    let glyph_verticies = vec![
-                        Vertex {
-                            position: [gl_rect.min.x, gl_rect.max.y],
-                            tex_position: [uv_rect.min.x, uv_rect.max.y],
-                            color: text.color,
-                        },
-                        Vertex {
-                            position: [gl_rect.min.x, gl_rect.min.y],
-                            tex_position: [uv_rect.min.x, uv_rect.min.y],
-                            color: text.color,
-                        },
-                        Vertex {
-                            position: [gl_rect.max.x, gl_rect.min.y],
-                            tex_position: [uv_rect.max.x, uv_rect.min.y],
-                            color: text.color,
-                        },
-                        Vertex {
-                            position: [gl_rect.max.x, gl_rect.min.y],
-                            tex_position: [uv_rect.max.x, uv_rect.min.y],
-                            color: text.color,
-                        },
-                        Vertex {
-                            position: [gl_rect.max.x, gl_rect.max.y],
-                            tex_position: [uv_rect.max.x, uv_rect.max.y],
-                            color: text.color,
-                        },
-                        Vertex {
-                            position: [gl_rect.min.x, gl_rect.max.y],
-                            tex_position: [uv_rect.min.x, uv_rect.max.y],
-                            color: text.color,
-                        },
-                    ];
-                    for glyph_vertex in glyph_verticies {
-                        text_vertices.push(glyph_vertex);
-                    }
+                    text_vertices.push(Vertex {
+                        position: [gl_rect.min.x, gl_rect.max.y],
+                        tex_position: [uv_rect.min.x, uv_rect.max.y],
+                        color: text.color,
+                    });
+                    text_vertices.push(Vertex {
+                        position: [gl_rect.min.x, gl_rect.min.y],
+                        tex_position: [uv_rect.min.x, uv_rect.min.y],
+                        color: text.color,
+                    });
+                    text_vertices.push(Vertex {
+                        position: [gl_rect.max.x, gl_rect.min.y],
+                        tex_position: [uv_rect.max.x, uv_rect.min.y],
+                        color: text.color,
+                    });
+                    text_vertices.push(Vertex {
+                        position: [gl_rect.max.x, gl_rect.min.y],
+                        tex_position: [uv_rect.max.x, uv_rect.min.y],
+                        color: text.color,
+                    });
+                    text_vertices.push(Vertex {
+                        position: [gl_rect.max.x, gl_rect.max.y],
+                        tex_position: [uv_rect.max.x, uv_rect.max.y],
+                        color: text.color,
+                    });
+                    text_vertices.push(Vertex {
+                        position: [gl_rect.min.x, gl_rect.max.y],
+                        tex_position: [uv_rect.min.x, uv_rect.max.y],
+                        color: text.color,
+                    });
                 };
             }
+        }
+
+        if text_vertices.len() > 0 {
             let vertex_buffer = CpuAccessibleBuffer::from_iter(
                 self.device.as_ref().as_mut().unwrap().clone(),
                 BufferUsage {
@@ -346,4 +357,44 @@ impl<T> DrawLayer<T> for TextDrawLayer {
         // Clear the queued texts
         self.texts.clear();
     }
+}
+
+fn create_glyph_cache_and_pixels<'a>(font: Font<'a>) -> (Cache<'a>, Vec<u8>) {
+    let mut cache = Cache::builder()
+        .dimensions(CACHE_WIDTH as u32, CACHE_HEIGHT as u32)
+        .scale_tolerance(5.0)
+        .position_tolerance(5.0)
+        .build();
+
+    let glyphs = font.glyphs_for(
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.,;:!@#$%^&*()-=1234567890`~/".chars(),
+    );
+
+    let scale = Scale::uniform(24.0);
+    for glyph in glyphs {
+        let glyph = glyph.scaled(scale);
+        let glyph = glyph.positioned(point(0.0, 0.0));
+        cache.queue_glyph(0, glyph.clone());
+    }
+
+    let mut pixels = vec![0; CACHE_WIDTH * CACHE_HEIGHT];
+    cache
+        .cache_queued(|rect, src_data| {
+            let width = (rect.max.x - rect.min.x) as usize;
+            let height = (rect.max.y - rect.min.y) as usize;
+            let mut dst_index = rect.min.y as usize * CACHE_WIDTH + rect.min.x as usize;
+            let mut src_index = 0;
+
+            for _ in 0..height {
+                let dst_slice = &mut pixels[dst_index..dst_index + width];
+                let src_slice = &src_data[src_index..src_index + width];
+                dst_slice.copy_from_slice(src_slice);
+
+                dst_index += CACHE_WIDTH;
+                src_index += width;
+            }
+        })
+        .expect("Could not cache glyphs");
+
+    (cache, pixels)
 }
