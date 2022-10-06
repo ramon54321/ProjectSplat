@@ -31,7 +31,10 @@ use winit::{
 mod layers;
 mod util;
 
-pub use layers::{basic::BasicTriangleDrawLayer, text::TextDrawLayer};
+pub use layers::{
+    basic::BasicTriangleDrawLayer,
+    text::{TextDrawLayer, TextEnqueueRequest},
+};
 pub use winit::event::VirtualKeyCode;
 
 pub trait DrawLayer<T> {

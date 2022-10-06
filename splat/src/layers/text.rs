@@ -1,7 +1,7 @@
 use crate::{AlignHorizontal, AlignVertical, DrawLayer, GpuInterface, Meta};
 use bytemuck::{Pod, Zeroable};
-use rusttype::{gpu_cache::Cache, point, vector, Font, Glyph, PositionedGlyph, Rect, Scale};
-use std::{collections::HashMap, fmt::Debug, sync::Arc};
+use rusttype::{gpu_cache::Cache, point, Font, PositionedGlyph, Rect, Scale};
+use std::{fmt::Debug, sync::Arc};
 use vulkano::{
     buffer::{BufferUsage, CpuAccessibleBuffer, TypedBufferAccess},
     descriptor_set::{PersistentDescriptorSet, WriteDescriptorSet},
@@ -26,6 +26,8 @@ const CACHE_WIDTH: usize = 256;
 const CACHE_HEIGHT: usize = 256;
 
 struct TextData {
+    x: f32,
+    y: f32,
     glyphs: Vec<PositionedGlyph<'static>>,
     color: [f32; 4],
 }
@@ -38,6 +40,7 @@ pub struct TextDrawLayer {
     font: Option<Font<'static>>,
     cache: Option<Cache<'static>>,
     texts: Vec<TextData>,
+    requests: Vec<TextEnqueueRequest>,
 }
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Zeroable, Pod)]
@@ -47,60 +50,18 @@ struct Vertex {
     color: [f32; 4],
 }
 impl_vertex!(Vertex, position, tex_position, color);
+
+pub struct TextEnqueueRequest {
+    pub x: f32,
+    pub y: f32,
+    pub align_horizontal: AlignHorizontal,
+    pub align_vertical: AlignVertical,
+    pub color: [f32; 4],
+    pub text: String,
+}
 impl TextDrawLayer {
-    pub fn enqueue_text(
-        &mut self,
-        x: f32,
-        y: f32,
-        size: f32,
-        align_horizontal: AlignHorizontal,
-        align_vertical: AlignVertical,
-        color: [f32; 4],
-        text: &str,
-    ) {
-        // Place glyphs
-        let font = self.font.as_ref().unwrap();
-        let scale = Scale::uniform(24.0);
-        let mut glyphs = Vec::with_capacity(text.len());
-        let mut x_current = x;
-        let mut width_total = 0.0;
-        for char in text.chars() {
-            let glyph = font.glyph(char);
-            let glyph = glyph.scaled(scale);
-            let advance_width = glyph.h_metrics().advance_width;
-            let next_glyph = glyph.positioned(point(x_current + x, y));
-            x_current += advance_width;
-            width_total = width_total + advance_width;
-            glyphs.push(next_glyph);
-        }
-
-        // Align
-        let horizontal_offset = match align_horizontal {
-            AlignHorizontal::Left => 0.0,
-            AlignHorizontal::Center => width_total / 2.0,
-            AlignHorizontal::Right => width_total,
-        };
-        let v_metrics = self.font.as_ref().unwrap().v_metrics(scale);
-        let line_height = v_metrics.ascent;
-        let vertical_offset = match align_vertical {
-            AlignVertical::Top => line_height,
-            AlignVertical::Center => line_height / 2.0,
-            AlignVertical::Bottom => 0.0,
-        };
-        for glyph in &mut glyphs {
-            let old_position = glyph.position();
-            let new_position = point(
-                old_position.x - horizontal_offset,
-                old_position.y + vertical_offset,
-            );
-            glyph.set_position(new_position);
-        }
-
-        // Store text to render
-        self.texts.push(TextData {
-            glyphs: glyphs.clone(),
-            color,
-        });
+    pub fn enqueue_text(&mut self, request: TextEnqueueRequest) {
+        self.requests.push(request);
     }
 }
 impl<T> DrawLayer<T> for TextDrawLayer {
@@ -280,6 +241,51 @@ impl<T> DrawLayer<T> for TextDrawLayer {
         //.unwrap();
         //}
 
+        for i in 0..self.requests.len() {
+            let request = &self.requests[i];
+            let font = self.font.as_ref().unwrap();
+            let scale = Scale::uniform(24.0);
+
+            // Alignment
+            let v_metrics = font.v_metrics(scale);
+            let line_height = v_metrics.ascent;
+            let vertical_offset = match request.align_vertical {
+                AlignVertical::Top => line_height,
+                AlignVertical::Center => line_height / 2.0,
+                AlignVertical::Bottom => 0.0,
+            };
+
+            // Place glyphs
+            let mut glyphs = Vec::with_capacity(request.text.len());
+            let mut x_current = 0.0;
+            let mut width_total = 0.0;
+            for char in request.text.chars() {
+                let glyph = font.glyph(char);
+                let glyph = glyph.scaled(scale);
+                let advance_width = glyph.h_metrics().advance_width;
+                let next_glyph = glyph.positioned(point(x_current, vertical_offset));
+                x_current += advance_width;
+                width_total = width_total + advance_width;
+                glyphs.push(next_glyph);
+            }
+
+            // Alignment
+            let horizontal_offset = match request.align_horizontal {
+                AlignHorizontal::Left => 0.0,
+                AlignHorizontal::Center => width_total / 2.0,
+                AlignHorizontal::Right => width_total,
+            };
+
+            // Store
+            self.texts.push(TextData {
+                x: request.x - horizontal_offset,
+                y: request.y,
+                glyphs: glyphs.clone(),
+                color: request.color,
+            });
+        }
+        self.requests.clear();
+
         let mut text_vertices: Vec<Vertex> = Vec::with_capacity(1000);
         let cache = self.cache.as_ref().unwrap();
         for text_index in 0..self.texts.len() {
@@ -289,12 +295,14 @@ impl<T> DrawLayer<T> for TextDrawLayer {
                 if let Ok(Some((uv_rect, screen_rect))) = cache.rect_for(0, glyph) {
                     let gl_rect = Rect {
                         min: point(
-                            (screen_rect.min.x as f32 / screen_width as f32 - 0.5) * 2.0,
-                            (screen_rect.min.y as f32 / screen_height as f32 - 0.5) * 2.0,
+                            ((screen_rect.min.x as f32 + text.x) / screen_width as f32 - 0.5) * 2.0,
+                            ((screen_rect.min.y as f32 + text.y) / screen_height as f32 - 0.5)
+                                * 2.0,
                         ),
                         max: point(
-                            (screen_rect.max.x as f32 / screen_width as f32 - 0.5) * 2.0,
-                            (screen_rect.max.y as f32 / screen_height as f32 - 0.5) * 2.0,
+                            ((screen_rect.max.x as f32 + text.x) / screen_width as f32 - 0.5) * 2.0,
+                            ((screen_rect.max.y as f32 + text.y) / screen_height as f32 - 0.5)
+                                * 2.0,
                         ),
                     };
                     text_vertices.push(Vertex {

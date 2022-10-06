@@ -20,3 +20,4 @@ ron = "0.8"
 rand = "0.8.4"
 glium = "0.32.1"
 rusttype = { version = "0.8.3", features = ["gpu_cache"] }
+rayon = "1.5"
