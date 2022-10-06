@@ -2,6 +2,7 @@ use crate::{AlignHorizontal, AlignVertical, DrawLayer, GpuInterface, Meta};
 use bytemuck::{Pod, Zeroable};
 use rusttype::{gpu_cache::Cache, point, Font, PositionedGlyph, Rect, Scale};
 use std::{collections::HashMap, fmt::Debug, rc::Rc, sync::Arc};
+use uuid::Uuid;
 use vulkano::{
     buffer::{BufferUsage, CpuAccessibleBuffer, TypedBufferAccess},
     descriptor_set::{PersistentDescriptorSet, WriteDescriptorSet},
@@ -23,16 +24,19 @@ use vulkano::{
 };
 
 const TEXT_GLYPH_CACHE_LIMIT: usize = 128;
+const TEXT_VERTICES_CACHE_LIMIT: usize = 128;
 const PIXEL_CACHE_WIDTH: usize = 256;
 const PIXEL_CACHE_HEIGHT: usize = 256;
 
-type GlyphCacheEntry = (Rc<Vec<PositionedGlyph<'static>>>, f32, f32);
+type GlyphCacheEntry = (Rc<Vec<PositionedGlyph<'static>>>, f32, f32, Uuid);
 
 struct TextData {
     x: f32,
     y: f32,
     glyphs: Rc<Vec<PositionedGlyph<'static>>>,
     color: [f32; 4],
+    uuid: Uuid,
+    should_cache: bool,
 }
 
 #[repr(C)]
@@ -63,6 +67,7 @@ pub struct TextDrawLayer {
     cache: Option<Cache<'static>>,
     requests: Vec<TextEnqueueRequest>,
     text_glyph_cache: HashMap<String, GlyphCacheEntry>,
+    text_vertices_cache: HashMap<Uuid, Rc<Vec<Vertex>>>,
 }
 impl TextDrawLayer {
     pub fn enqueue_text(&mut self, request: TextEnqueueRequest) {
@@ -209,6 +214,7 @@ impl<T> DrawLayer<T> for TextDrawLayer {
 
         let vertices = build_vertices_from_text_datas(
             &text_datas,
+            &mut self.text_vertices_cache,
             self.cache.as_ref().unwrap(),
             screen_width,
             screen_height,
@@ -275,14 +281,30 @@ fn build_text_data_from_requests(
 
         // Check if glyphs for this text is cached
         if request.should_cache {
-            if let Some((glyphs, horizontal_offset, vertical_offset)) =
+            if let Some((glyphs, horizontal_offset, vertical_offset, uuid)) =
                 text_glyph_cache.get(&request.text)
             {
+                let mut position_bytes = [0u8; 24];
+                let position_x_bytes = &request.x.to_ne_bytes();
+                let position_y_bytes = &request.y.to_ne_bytes();
+                let uuid_bytes = uuid.as_bytes();
+                for i in 0..4 {
+                    position_bytes[i] = position_x_bytes[i];
+                }
+                for i in 0..4 {
+                    position_bytes[i + 4] = position_y_bytes[i];
+                }
+                for i in 0..16 {
+                    position_bytes[i + 8] = uuid_bytes[i];
+                }
+                let text_data_unique_uuid = Uuid::new_v3(&Uuid::NAMESPACE_OID, &position_bytes);
                 texts.push(TextData {
                     x: request.x - horizontal_offset,
                     y: request.y + vertical_offset,
                     glyphs: glyphs.clone(),
                     color: request.color,
+                    uuid: text_data_unique_uuid,
+                    should_cache: true,
                 });
                 continue;
             }
@@ -318,6 +340,8 @@ fn build_text_data_from_requests(
             AlignHorizontal::Right => width_total,
         };
 
+        let uuid = Uuid::new_v4();
+
         // Reference count glyphs to avoid clone in cache
         let glyphs = Rc::new(glyphs);
 
@@ -327,19 +351,21 @@ fn build_text_data_from_requests(
             y: request.y + vertical_offset,
             glyphs: glyphs.clone(),
             color: request.color,
+            uuid,
+            should_cache: request.should_cache,
         });
 
         if request.should_cache {
             // Reset cache if too large
             if text_glyph_cache.len() >= TEXT_GLYPH_CACHE_LIMIT {
                 text_glyph_cache.clear();
-                println!("Resetting Cache");
+                println!("Vulkan Text: Resetting Glyph Cache");
             }
 
             // Cache glyphs
             text_glyph_cache.insert(
                 request.text.clone(),
-                (glyphs, horizontal_offset, vertical_offset),
+                (glyphs, horizontal_offset, vertical_offset, uuid),
             );
         }
     }
@@ -348,57 +374,91 @@ fn build_text_data_from_requests(
 
 fn build_vertices_from_text_datas(
     texts: &Vec<TextData>,
+    text_vertices_cache: &mut HashMap<Uuid, Rc<Vec<Vertex>>>,
     cache: &Cache,
     screen_width: f32,
     screen_height: f32,
 ) -> Vec<Vertex> {
     let mut vertices: Vec<Vertex> = Vec::with_capacity(1000);
     for text_index in 0..texts.len() {
-        let text = &texts[text_index];
-        for glyph_index in 0..text.glyphs.len() {
-            let glyph = &text.glyphs[glyph_index];
+        let text_data = &texts[text_index];
+
+        // Check if vertices exist in cache
+        if text_data.should_cache {
+            if let Some(text_vertices) = text_vertices_cache.get(&text_data.uuid) {
+                for i in 0..text_vertices.len() {
+                    vertices.push(text_vertices[i].clone());
+                }
+                continue;
+            }
+        }
+
+        // Cache miss -> Build vertices from glyphs
+        let mut text_vertices = Vec::with_capacity(text_data.glyphs.len() * 6);
+        for glyph_index in 0..text_data.glyphs.len() {
+            let glyph = &text_data.glyphs[glyph_index];
             if let Ok(Some((uv_rect, screen_rect))) = cache.rect_for(0, glyph) {
                 let gl_rect = Rect {
                     min: point(
-                        ((screen_rect.min.x as f32 + text.x) / screen_width - 0.5) * 2.0,
-                        ((screen_rect.min.y as f32 + text.y) / screen_height - 0.5) * 2.0,
+                        ((screen_rect.min.x as f32 + text_data.x) / screen_width - 0.5) * 2.0,
+                        ((screen_rect.min.y as f32 + text_data.y) / screen_height - 0.5) * 2.0,
                     ),
                     max: point(
-                        ((screen_rect.max.x as f32 + text.x) / screen_width - 0.5) * 2.0,
-                        ((screen_rect.max.y as f32 + text.y) / screen_height - 0.5) * 2.0,
+                        ((screen_rect.max.x as f32 + text_data.x) / screen_width - 0.5) * 2.0,
+                        ((screen_rect.max.y as f32 + text_data.y) / screen_height - 0.5) * 2.0,
                     ),
                 };
-                vertices.push(Vertex {
+                text_vertices.push(Vertex {
                     position: [gl_rect.min.x, gl_rect.max.y],
                     tex_position: [uv_rect.min.x, uv_rect.max.y],
-                    color: text.color,
+                    color: text_data.color,
                 });
-                vertices.push(Vertex {
+                text_vertices.push(Vertex {
                     position: [gl_rect.min.x, gl_rect.min.y],
                     tex_position: [uv_rect.min.x, uv_rect.min.y],
-                    color: text.color,
+                    color: text_data.color,
                 });
-                vertices.push(Vertex {
+                text_vertices.push(Vertex {
                     position: [gl_rect.max.x, gl_rect.min.y],
                     tex_position: [uv_rect.max.x, uv_rect.min.y],
-                    color: text.color,
+                    color: text_data.color,
                 });
-                vertices.push(Vertex {
+                text_vertices.push(Vertex {
                     position: [gl_rect.max.x, gl_rect.min.y],
                     tex_position: [uv_rect.max.x, uv_rect.min.y],
-                    color: text.color,
+                    color: text_data.color,
                 });
-                vertices.push(Vertex {
+                text_vertices.push(Vertex {
                     position: [gl_rect.max.x, gl_rect.max.y],
                     tex_position: [uv_rect.max.x, uv_rect.max.y],
-                    color: text.color,
+                    color: text_data.color,
                 });
-                vertices.push(Vertex {
+                text_vertices.push(Vertex {
                     position: [gl_rect.min.x, gl_rect.max.y],
                     tex_position: [uv_rect.min.x, uv_rect.max.y],
-                    color: text.color,
+                    color: text_data.color,
                 });
             };
+        }
+
+        // Reference count vertices to avoid clone in cache
+        let text_vertices = Rc::new(text_vertices);
+
+        // Append vertices
+        for i in 0..text_vertices.len() {
+            vertices.push(text_vertices[i].clone());
+        }
+
+        // Add to cache
+        if text_data.should_cache {
+            // Reset cache if too large
+            if text_vertices_cache.len() >= TEXT_VERTICES_CACHE_LIMIT {
+                text_vertices_cache.clear();
+                println!("Vulkan Text: Resetting Vertex Cache");
+            }
+
+            // Cache vertices
+            text_vertices_cache.insert(text_data.uuid, text_vertices.clone());
         }
     }
     vertices
