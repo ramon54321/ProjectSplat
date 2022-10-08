@@ -269,6 +269,7 @@ fn create_glyph_cache_and_pixels<'a>(font: Font<'a>) -> (Cache<'a>, Vec<u8>) {
     (cache, pixels)
 }
 
+#[inline]
 fn build_text_data_from_requests(
     requests: &Vec<TextEnqueueRequest>,
     text_glyph_cache: &mut HashMap<String, GlyphCacheEntry>,
@@ -372,6 +373,7 @@ fn build_text_data_from_requests(
     texts
 }
 
+#[inline]
 fn build_vertices_from_text_datas(
     texts: &Vec<TextData>,
     text_vertices_cache: &mut HashMap<Uuid, Rc<Vec<Vertex>>>,
@@ -464,6 +466,7 @@ fn build_vertices_from_text_datas(
     vertices
 }
 
+#[inline]
 fn submit_vertices_draw(
     gpu_interface: &mut GpuInterface,
     device: Arc<Device>,
