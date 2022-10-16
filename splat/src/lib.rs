@@ -1,6 +1,6 @@
 use crate::util::{
     create_framebuffers, create_instance, create_surface, create_swapchain, get_device_extensions,
-    get_logical_device_and_queues, get_physical_device_and_queue_family,
+    get_device_features, get_logical_device_and_queues, get_physical_device_and_queue_family,
 };
 use nalgebra_glm::Vec2;
 use std::{
@@ -55,6 +55,7 @@ pub enum AlignVertical {
 
 pub struct Meta<'a> {
     pub frames_per_second: usize,
+    pub was_swapchain_rebuilt: bool,
     pub layer_durations: Vec<Duration>,
     pub delta_time: Duration,
     pub mouse_position: Vec2,
@@ -70,14 +71,43 @@ pub struct GpuInterface<'a> {
     pub viewport: Viewport,
 }
 
-pub fn render<T: 'static>(mut state: T, mut layers: Vec<Rc<RefCell<dyn DrawLayer<T>>>>) {
+#[derive(Debug, Clone)]
+pub struct SplatCreateInfo {
+    pub title: String,
+    pub size: [u16; 2],
+    pub is_resizable: bool,
+    pub is_maximized: bool,
+    pub is_fullscreen: bool,
+}
+impl Default for SplatCreateInfo {
+    fn default() -> Self {
+        Self {
+            title: "Splat App".to_string(),
+            size: [800, 600],
+            is_resizable: false,
+            is_maximized: false,
+            is_fullscreen: false,
+        }
+    }
+}
+
+pub fn render<T: 'static>(
+    splat_create_info: SplatCreateInfo,
+    mut state: T,
+    mut layers: Vec<Rc<RefCell<dyn DrawLayer<T>>>>,
+) {
     let event_loop = EventLoop::new();
 
     let instance = create_instance();
-    let surface = create_surface(&event_loop, instance.clone(), "Badlands VK");
+    let surface = create_surface(&splat_create_info, &event_loop, instance.clone());
+    let device_features = get_device_features();
     let device_extensions = get_device_extensions();
-    let (physical_device, queue_family_index) =
-        get_physical_device_and_queue_family(instance.clone(), surface.clone(), &device_extensions);
+    let (physical_device, queue_family_index) = get_physical_device_and_queue_family(
+        instance.clone(),
+        surface.clone(),
+        &device_features,
+        &device_extensions,
+    );
 
     println!(
         "Using graphics device: {} ({:?})",
@@ -85,8 +115,12 @@ pub fn render<T: 'static>(mut state: T, mut layers: Vec<Rc<RefCell<dyn DrawLayer
         physical_device.properties().device_type,
     );
 
-    let (device, queue) =
-        get_logical_device_and_queues(physical_device, device_extensions, queue_family_index);
+    let (device, queue) = get_logical_device_and_queues(
+        physical_device,
+        &device_features,
+        &device_extensions,
+        queue_family_index,
+    );
     let (mut swapchain, images) = create_swapchain(device.clone(), surface.clone());
 
     let render_pass = vulkano::single_pass_renderpass!(
@@ -223,7 +257,9 @@ pub fn render<T: 'static>(mut state: T, mut layers: Vec<Rc<RefCell<dyn DrawLayer
                 // Periodic cleanup
                 previous_frame_end.as_mut().unwrap().cleanup_finished();
 
+                let mut was_swapchain_rebuilt = false;
                 if is_swapchain_invalid {
+                    was_swapchain_rebuilt = true;
                     let (new_swapchain, new_images) =
                         match swapchain.recreate(SwapchainCreateInfo {
                             image_extent: dimensions.into(),
@@ -265,7 +301,7 @@ pub fn render<T: 'static>(mut state: T, mut layers: Vec<Rc<RefCell<dyn DrawLayer
                     .begin_render_pass(
                         RenderPassBeginInfo {
                             // Clear value for 'color' attachment
-                            clear_values: vec![Some([0.0, 0.0, 1.0, 1.0].into())],
+                            clear_values: vec![Some([0.349, 0.314, 0.294, 1.0].into())],
                             ..RenderPassBeginInfo::framebuffer(
                                 framebuffers[framebuffer_image_index as usize].clone(),
                             )
@@ -278,6 +314,7 @@ pub fn render<T: 'static>(mut state: T, mut layers: Vec<Rc<RefCell<dyn DrawLayer
                 // Construct state for current frame
                 let mut meta = Meta {
                     frames_per_second,
+                    was_swapchain_rebuilt,
                     layer_durations: layer_durations.clone(),
                     delta_time,
                     mouse_position,

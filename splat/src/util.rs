@@ -2,7 +2,7 @@ use std::sync::Arc;
 use vulkano::{
     device::{
         physical::{PhysicalDevice, PhysicalDeviceType},
-        Device, DeviceCreateInfo, DeviceExtensions, Queue, QueueCreateInfo,
+        Device, DeviceCreateInfo, DeviceExtensions, Features, Queue, QueueCreateInfo,
     },
     image::{view::ImageView, ImageAccess, ImageUsage, SwapchainImage},
     instance::{Instance, InstanceCreateInfo},
@@ -15,8 +15,10 @@ use vulkano_win::VkSurfaceBuild;
 use winit::{
     dpi::LogicalSize,
     event_loop::EventLoop,
-    window::{Window, WindowBuilder},
+    window::{Fullscreen, Window, WindowBuilder},
 };
+
+use crate::SplatCreateInfo;
 
 pub fn create_instance() -> Arc<Instance> {
     // Load Library
@@ -38,17 +40,32 @@ pub fn create_instance() -> Arc<Instance> {
 }
 
 pub fn create_surface<T>(
+    splat_create_info: &SplatCreateInfo,
     event_loop: &EventLoop<T>,
     instance: Arc<Instance>,
-    title: &str,
 ) -> Arc<Surface<Window>> {
-    let surface = WindowBuilder::new()
-        .with_title(title)
-        .with_resizable(false)
-        .with_inner_size(LogicalSize::new(1200, 800))
-        .build_vk_surface(event_loop, instance)
-        .unwrap();
-    surface
+    let mut surface = WindowBuilder::new()
+        .with_title(&splat_create_info.title)
+        .with_resizable(splat_create_info.is_resizable)
+        .with_maximized(splat_create_info.is_maximized);
+
+    if splat_create_info.is_fullscreen {
+        surface = surface.with_fullscreen(Some(Fullscreen::Borderless(None)));
+    } else {
+        surface = surface.with_inner_size(LogicalSize::new(
+            splat_create_info.size[0],
+            splat_create_info.size[1],
+        ));
+    }
+
+    surface.build_vk_surface(event_loop, instance).unwrap()
+}
+
+pub fn get_device_features() -> Features {
+    Features {
+        wide_lines: false, // Apple M1 vulkan backend does not yet support wide lines
+        ..Features::empty()
+    }
 }
 
 pub fn get_device_extensions() -> DeviceExtensions {
@@ -61,6 +78,7 @@ pub fn get_device_extensions() -> DeviceExtensions {
 pub fn get_physical_device_and_queue_family(
     instance: Arc<Instance>,
     surface: Arc<Surface<Window>>,
+    device_features: &Features,
     device_extensions: &DeviceExtensions,
 ) -> (Arc<PhysicalDevice>, u32) {
     instance
@@ -68,8 +86,11 @@ pub fn get_physical_device_and_queue_family(
         .expect("Could not enumerate physical devices")
         .filter(|physical_device| {
             physical_device
-                .supported_extensions()
-                .contains(&device_extensions)
+                .supported_features()
+                .contains(&device_features)
+                && physical_device
+                    .supported_extensions()
+                    .contains(&device_extensions)
         })
         .filter_map(|physical_device| {
             physical_device
@@ -100,13 +121,15 @@ pub fn get_physical_device_and_queue_family(
 
 pub fn get_logical_device_and_queues(
     physical_device: Arc<PhysicalDevice>,
-    device_extensions: DeviceExtensions,
+    device_features: &Features,
+    device_extensions: &DeviceExtensions,
     queue_family_index: u32,
 ) -> (Arc<Device>, Arc<Queue>) {
     let (device, mut queues) = Device::new(
         physical_device,
         DeviceCreateInfo {
-            enabled_extensions: device_extensions,
+            enabled_features: device_features.clone(),
+            enabled_extensions: device_extensions.clone(),
             queue_create_infos: vec![QueueCreateInfo {
                 queue_family_index,
                 ..Default::default()

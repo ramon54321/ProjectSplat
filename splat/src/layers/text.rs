@@ -27,6 +27,8 @@ const TEXT_GLYPH_CACHE_LIMIT: usize = 128;
 const TEXT_VERTICES_CACHE_LIMIT: usize = 128;
 const PIXEL_CACHE_WIDTH: usize = 256;
 const PIXEL_CACHE_HEIGHT: usize = 256;
+const CHAR_SET: &str =
+    " abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.,;:!@#$%^&*()[]{}?-=1234567890`~/<>|\\";
 
 type GlyphCacheEntry = (Rc<Vec<PositionedGlyph<'static>>>, f32, f32, Uuid);
 
@@ -186,9 +188,15 @@ impl<T> DrawLayer<T> for TextDrawLayer {
         self.cache = Some(cache);
         self.descriptor_set = Some(set);
     }
-    fn draw(&mut self, gpu_interface: &mut GpuInterface, _meta: &mut Meta, _state: &mut T) {
+    fn draw(&mut self, gpu_interface: &mut GpuInterface, meta: &mut Meta, _state: &mut T) {
         let screen_width = gpu_interface.viewport.dimensions[0];
         let screen_height = gpu_interface.viewport.dimensions[1];
+
+        // Check if caches need to be rebuilt
+        if meta.was_swapchain_rebuilt {
+            self.text_glyph_cache.clear();
+            self.text_vertices_cache.clear();
+        }
 
         // Prepare command buffer for text draw calls
         gpu_interface
@@ -235,10 +243,7 @@ fn create_glyph_cache_and_pixels<'a>(font: Font<'a>) -> (Cache<'a>, Vec<u8>) {
         .position_tolerance(5.0)
         .build();
 
-    let glyphs = font.glyphs_for(
-        " abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.,;:!@#$%^&*()[]{}?-=1234567890`~/"
-            .chars(),
-    );
+    let glyphs = font.glyphs_for(CHAR_SET.chars());
 
     let scale = Scale::uniform(24.0);
     for glyph in glyphs {
