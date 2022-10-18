@@ -78,6 +78,7 @@ pub struct SplatCreateInfo {
     pub is_resizable: bool,
     pub is_maximized: bool,
     pub is_fullscreen: bool,
+    pub clear_color: [f32; 4],
 }
 impl Default for SplatCreateInfo {
     fn default() -> Self {
@@ -87,6 +88,7 @@ impl Default for SplatCreateInfo {
             is_resizable: false,
             is_maximized: false,
             is_fullscreen: false,
+            clear_color: [0.349, 0.314, 0.294, 1.0],
         }
     }
 }
@@ -159,6 +161,9 @@ pub fn render<T: 'static>(
             // TODO: Add this to gpu interface
             .setup(device.clone(), queue.clone(), render_pass.clone());
     }
+
+    // Settings
+    let clear_color = splat_create_info.clear_color;
 
     // Loop
     let mut is_swapchain_invalid = false;
@@ -301,7 +306,7 @@ pub fn render<T: 'static>(
                     .begin_render_pass(
                         RenderPassBeginInfo {
                             // Clear value for 'color' attachment
-                            clear_values: vec![Some([0.349, 0.314, 0.294, 1.0].into())],
+                            clear_values: vec![Some(clear_color.into())],
                             ..RenderPassBeginInfo::framebuffer(
                                 framebuffers[framebuffer_image_index as usize].clone(),
                             )
