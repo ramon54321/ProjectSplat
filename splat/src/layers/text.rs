@@ -1,4 +1,4 @@
-use crate::{AlignHorizontal, AlignVertical, DrawLayer, GpuInterface, Meta};
+use crate::{AlignHorizontal, AlignVertical, DrawLayer, GpuInterface, Meta, SetupInfo};
 use bytemuck::{Pod, Zeroable};
 use rusttype::{gpu_cache::Cache, point, Font, PositionedGlyph, Rect, Scale};
 use std::{collections::HashMap, fmt::Debug, rc::Rc, sync::Arc};
@@ -77,7 +77,7 @@ impl TextDrawLayer {
     }
 }
 impl<T> DrawLayer<T> for TextDrawLayer {
-    fn setup(&mut self, device: Arc<Device>, queue: Arc<Queue>, render_pass: Arc<RenderPass>) {
+    fn setup(&mut self, setup_info: &mut SetupInfo) {
         let font_data = include_bytes!("DejaVuSans.ttf");
         let font = Font::from_bytes(font_data as &[u8]).unwrap();
         let (cache, cache_pixels) = create_glyph_cache_and_pixels(font.clone());
@@ -122,11 +122,11 @@ impl<T> DrawLayer<T> for TextDrawLayer {
             }
         }
 
-        let vs = vs::load(device.clone()).expect("Could not load vertex shader");
-        let fs = fs::load(device.clone()).expect("Could not load fragment shader");
+        let vs = vs::load(setup_info.device.clone()).expect("Could not load vertex shader");
+        let fs = fs::load(setup_info.device.clone()).expect("Could not load fragment shader");
 
         let pipeline = GraphicsPipeline::start()
-            .render_pass(Subpass::from(render_pass.clone(), 0).unwrap())
+            .render_pass(Subpass::from(setup_info.render_pass.clone(), 0).unwrap())
             .vertex_input_state(BuffersDefinition::new().vertex::<Vertex>())
             .input_assembly_state(
                 InputAssemblyState::new().topology(PrimitiveTopology::TriangleList),
@@ -135,7 +135,7 @@ impl<T> DrawLayer<T> for TextDrawLayer {
             .viewport_state(ViewportState::viewport_dynamic_scissor_irrelevant())
             .fragment_shader(fs.entry_point("main").unwrap(), ())
             .color_blend_state(ColorBlendState::default().blend_alpha())
-            .build(device.clone())
+            .build(setup_info.device.clone())
             .expect("Could not build pipeline");
 
         let (cache_texture, _) = ImmutableImage::from_iter(
@@ -147,12 +147,12 @@ impl<T> DrawLayer<T> for TextDrawLayer {
             },
             MipmapsCount::One,
             Format::R8_UNORM,
-            queue.clone(),
+            setup_info.queue.clone(),
         )
         .expect("Could not create text glyph cache texture");
 
         let sampler = Sampler::new(
-            device.clone(),
+            setup_info.device.clone(),
             SamplerCreateInfo {
                 min_filter: Filter::Linear,
                 mag_filter: Filter::Linear,
@@ -182,7 +182,7 @@ impl<T> DrawLayer<T> for TextDrawLayer {
         )
         .expect("Could not create descriptor set");
 
-        self.device = Some(device);
+        self.device = Some(setup_info.device.clone());
         self.pipeline = Some(pipeline);
         self.font = Some(font);
         self.cache = Some(cache);

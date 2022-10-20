@@ -37,8 +37,14 @@ pub use layers::{
 };
 pub use winit::event::VirtualKeyCode;
 
+pub struct SetupInfo {
+    pub device: Arc<Device>,
+    pub queue: Arc<Queue>,
+    pub render_pass: Arc<RenderPass>,
+}
+
 pub trait DrawLayer<T> {
-    fn setup(&mut self, device: Arc<Device>, queue: Arc<Queue>, render_pass: Arc<RenderPass>);
+    fn setup(&mut self, setup_info: &mut SetupInfo);
     fn draw(&mut self, gpu_interface: &mut GpuInterface, meta: &mut Meta, state: &mut T);
 }
 
@@ -156,10 +162,12 @@ pub fn render<T: 'static>(
 
     // Set up render layers
     for layer in layers.iter_mut() {
-        layer
-            .borrow_mut()
-            // TODO: Add this to gpu interface
-            .setup(device.clone(), queue.clone(), render_pass.clone());
+        let mut setup_info = SetupInfo {
+            device: device.clone(),
+            queue: queue.clone(),
+            render_pass: render_pass.clone(),
+        };
+        layer.borrow_mut().setup(&mut setup_info);
     }
 
     // Settings

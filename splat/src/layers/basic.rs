@@ -1,4 +1,4 @@
-use crate::{DrawLayer, GpuInterface, Meta};
+use crate::{DrawLayer, GpuInterface, Meta, SetupInfo};
 use bytemuck::{Pod, Zeroable};
 use std::{fmt::Debug, sync::Arc};
 use vulkano::{
@@ -28,7 +28,7 @@ struct Vertex {
 }
 impl_vertex!(Vertex, position);
 impl<T> DrawLayer<T> for BasicTriangleDrawLayer {
-    fn setup(&mut self, device: Arc<Device>, _queue: Arc<Queue>, render_pass: Arc<RenderPass>) {
+    fn setup(&mut self, setup_info: &mut SetupInfo) {
         let vertices = [
             Vertex {
                 position: [-0.5, -0.25],
@@ -41,7 +41,7 @@ impl<T> DrawLayer<T> for BasicTriangleDrawLayer {
             },
         ];
         let vertex_buffer = CpuAccessibleBuffer::from_iter(
-            device.clone(),
+            setup_info.device.clone(),
             BufferUsage {
                 vertex_buffer: true,
                 ..BufferUsage::empty()
@@ -81,11 +81,11 @@ impl<T> DrawLayer<T> for BasicTriangleDrawLayer {
             }
         }
 
-        let vs = vs::load(device.clone()).expect("Could not load vertex shader");
-        let fs = fs::load(device.clone()).expect("Could not load fragment shader");
+        let vs = vs::load(setup_info.device.clone()).expect("Could not load vertex shader");
+        let fs = fs::load(setup_info.device.clone()).expect("Could not load fragment shader");
 
         let pipeline = GraphicsPipeline::start()
-            .render_pass(Subpass::from(render_pass.clone(), 0).unwrap())
+            .render_pass(Subpass::from(setup_info.render_pass.clone(), 0).unwrap())
             .vertex_input_state(BuffersDefinition::new().vertex::<Vertex>())
             .input_assembly_state(
                 InputAssemblyState::new().topology(PrimitiveTopology::TriangleList),
@@ -93,7 +93,7 @@ impl<T> DrawLayer<T> for BasicTriangleDrawLayer {
             .vertex_shader(vs.entry_point("main").unwrap(), ())
             .viewport_state(ViewportState::viewport_dynamic_scissor_irrelevant())
             .fragment_shader(fs.entry_point("main").unwrap(), ())
-            .build(device.clone())
+            .build(setup_info.device.clone())
             .expect("Could not build pipeline");
 
         self.pipeline = Some(pipeline);
