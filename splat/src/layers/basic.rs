@@ -1,9 +1,8 @@
-use crate::{DrawInfo, DrawLayer, GpuInterface, Meta, SetupInfo};
+use crate::{DrawInfo, DrawLayer, SetupInfo};
 use bytemuck::{Pod, Zeroable};
 use std::{fmt::Debug, sync::Arc};
 use vulkano::{
     buffer::{BufferUsage, CpuAccessibleBuffer, TypedBufferAccess},
-    device::{Device, Queue},
     impl_vertex,
     pipeline::{
         graphics::{
@@ -13,7 +12,7 @@ use vulkano::{
         },
         GraphicsPipeline,
     },
-    render_pass::{RenderPass, Subpass},
+    render_pass::{Subpass},
 };
 
 #[derive(Default)]

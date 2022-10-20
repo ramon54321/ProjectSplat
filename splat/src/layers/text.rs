@@ -1,4 +1,4 @@
-use crate::{AlignHorizontal, AlignVertical, DrawInfo, DrawLayer, GpuInterface, Meta, SetupInfo};
+use crate::{AlignHorizontal, AlignVertical, DrawInfo, DrawLayer, GpuInterface, SetupInfo};
 use bytemuck::{Pod, Zeroable};
 use rusttype::{gpu_cache::Cache, point, Font, PositionedGlyph, Rect, Scale};
 use std::{collections::HashMap, fmt::Debug, rc::Rc, sync::Arc};
@@ -6,7 +6,7 @@ use uuid::Uuid;
 use vulkano::{
     buffer::{BufferUsage, CpuAccessibleBuffer, TypedBufferAccess},
     descriptor_set::{PersistentDescriptorSet, WriteDescriptorSet},
-    device::{Device, Queue},
+    device::{Device},
     format::Format,
     image::{view::ImageView, ImageDimensions, ImmutableImage, MipmapsCount},
     impl_vertex,
@@ -19,7 +19,7 @@ use vulkano::{
         },
         GraphicsPipeline, Pipeline, PipelineBindPoint,
     },
-    render_pass::{RenderPass, Subpass},
+    render_pass::{Subpass},
     sampler::{Filter, Sampler, SamplerAddressMode, SamplerCreateInfo, SamplerMipmapMode},
 };
 
