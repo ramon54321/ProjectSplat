@@ -43,9 +43,15 @@ pub struct SetupInfo {
     pub render_pass: Arc<RenderPass>,
 }
 
+pub struct DrawInfo<'a, 'b, T> {
+    pub gpu_interface: &'a mut GpuInterface<'b>,
+    pub meta: &'a mut Meta<'b>,
+    pub state: &'a mut T,
+}
+
 pub trait DrawLayer<T> {
     fn setup(&mut self, setup_info: &mut SetupInfo);
-    fn draw(&mut self, gpu_interface: &mut GpuInterface, meta: &mut Meta, state: &mut T);
+    fn draw(&mut self, draw_info: &mut DrawInfo<T>);
 }
 
 pub enum AlignHorizontal {
@@ -348,9 +354,13 @@ pub fn render<T: 'static>(
                 for layer in layers.iter_mut() {
                     let timer = Instant::now();
 
-                    layer
-                        .borrow_mut()
-                        .draw(&mut gpu_interface, &mut meta, &mut state);
+                    let mut draw_info = DrawInfo {
+                        gpu_interface: &mut gpu_interface,
+                        meta: &mut meta,
+                        state: &mut state,
+                    };
+
+                    layer.borrow_mut().draw(&mut draw_info);
 
                     let duration = Instant::now() - timer;
                     layer_durations.push(duration);

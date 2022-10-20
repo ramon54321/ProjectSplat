@@ -1,4 +1,4 @@
-use crate::{AlignHorizontal, AlignVertical, DrawLayer, GpuInterface, Meta, SetupInfo};
+use crate::{AlignHorizontal, AlignVertical, DrawInfo, DrawLayer, GpuInterface, Meta, SetupInfo};
 use bytemuck::{Pod, Zeroable};
 use rusttype::{gpu_cache::Cache, point, Font, PositionedGlyph, Rect, Scale};
 use std::{collections::HashMap, fmt::Debug, rc::Rc, sync::Arc};
@@ -188,18 +188,19 @@ impl<T> DrawLayer<T> for TextDrawLayer {
         self.cache = Some(cache);
         self.descriptor_set = Some(set);
     }
-    fn draw(&mut self, gpu_interface: &mut GpuInterface, meta: &mut Meta, _state: &mut T) {
-        let screen_width = gpu_interface.viewport.dimensions[0];
-        let screen_height = gpu_interface.viewport.dimensions[1];
+    fn draw(&mut self, draw_info: &mut DrawInfo<T>) {
+        let screen_width = draw_info.gpu_interface.viewport.dimensions[0];
+        let screen_height = draw_info.gpu_interface.viewport.dimensions[1];
 
         // Check if caches need to be rebuilt
-        if meta.was_swapchain_rebuilt {
+        if draw_info.meta.was_swapchain_rebuilt {
             self.text_glyph_cache.clear();
             self.text_vertices_cache.clear();
         }
 
         // Prepare command buffer for text draw calls
-        gpu_interface
+        draw_info
+            .gpu_interface
             .command_buffer_builder
             .bind_pipeline_graphics(self.pipeline.as_ref().unwrap().clone())
             .bind_descriptor_sets(
@@ -229,7 +230,7 @@ impl<T> DrawLayer<T> for TextDrawLayer {
         );
 
         submit_vertices_draw(
-            gpu_interface,
+            draw_info.gpu_interface,
             self.device.as_ref().unwrap().clone(),
             vertices,
         );

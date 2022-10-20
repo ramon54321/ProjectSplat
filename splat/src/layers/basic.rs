@@ -1,4 +1,4 @@
-use crate::{DrawLayer, GpuInterface, Meta, SetupInfo};
+use crate::{DrawInfo, DrawLayer, GpuInterface, Meta, SetupInfo};
 use bytemuck::{Pod, Zeroable};
 use std::{fmt::Debug, sync::Arc};
 use vulkano::{
@@ -99,8 +99,9 @@ impl<T> DrawLayer<T> for BasicTriangleDrawLayer {
         self.pipeline = Some(pipeline);
         self.vertex_buffer = Some(vertex_buffer);
     }
-    fn draw(&mut self, gpu_interface: &mut GpuInterface, _meta: &mut Meta, _state: &mut T) {
-        gpu_interface
+    fn draw(&mut self, draw_info: &mut DrawInfo<T>) {
+        draw_info
+            .gpu_interface
             .command_buffer_builder
             .bind_pipeline_graphics(self.pipeline.as_ref().unwrap().clone())
             .bind_vertex_buffers(0, self.vertex_buffer.as_ref().unwrap().clone())
