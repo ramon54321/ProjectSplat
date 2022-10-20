@@ -6,7 +6,7 @@ use uuid::Uuid;
 use vulkano::{
     buffer::{BufferUsage, CpuAccessibleBuffer, TypedBufferAccess},
     descriptor_set::{PersistentDescriptorSet, WriteDescriptorSet},
-    device::{Device},
+    device::Device,
     format::Format,
     image::{view::ImageView, ImageDimensions, ImmutableImage, MipmapsCount},
     impl_vertex,
@@ -19,7 +19,7 @@ use vulkano::{
         },
         GraphicsPipeline, Pipeline, PipelineBindPoint,
     },
-    render_pass::{Subpass},
+    render_pass::Subpass,
     sampler::{Filter, Sampler, SamplerAddressMode, SamplerCreateInfo, SamplerMipmapMode},
 };
 
