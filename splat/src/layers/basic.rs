@@ -12,7 +12,7 @@ use vulkano::{
         },
         GraphicsPipeline,
     },
-    render_pass::{Subpass},
+    render_pass::Subpass,
 };
 
 #[derive(Default)]
@@ -27,7 +27,7 @@ struct Vertex {
 }
 impl_vertex!(Vertex, position);
 impl<T> DrawLayer<T> for BasicTriangleDrawLayer {
-    fn setup(&mut self, setup_info: &mut SetupInfo) {
+    fn setup(&mut self, setup_info: &mut SetupInfo<T>) {
         let vertices = [
             Vertex {
                 position: [-0.5, -0.25],

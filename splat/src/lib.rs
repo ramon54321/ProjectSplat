@@ -37,7 +37,8 @@ pub use layers::{
 };
 pub use winit::event::VirtualKeyCode;
 
-pub struct SetupInfo {
+pub struct SetupInfo<'a, T> {
+    pub state: &'a mut T,
     pub device: Arc<Device>,
     pub queue: Arc<Queue>,
     pub render_pass: Arc<RenderPass>,
@@ -50,7 +51,7 @@ pub struct DrawInfo<'a, 'b, T> {
 }
 
 pub trait DrawLayer<T> {
-    fn setup(&mut self, setup_info: &mut SetupInfo);
+    fn setup(&mut self, setup_info: &mut SetupInfo<T>);
     fn draw(&mut self, draw_info: &mut DrawInfo<T>);
 }
 
@@ -169,6 +170,7 @@ pub fn render<T: 'static>(
     // Set up render layers
     for layer in layers.iter_mut() {
         let mut setup_info = SetupInfo {
+            state: &mut state,
             device: device.clone(),
             queue: queue.clone(),
             render_pass: render_pass.clone(),
