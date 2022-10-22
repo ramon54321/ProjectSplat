@@ -31,7 +31,6 @@ pub struct CopyDrawLayer {
     pipeline: Option<Arc<GraphicsPipeline>>,
     vertex_buffer: Option<Arc<CpuAccessibleBuffer<[Vertex]>>>,
     descriptor_set: Option<Arc<PersistentDescriptorSet>>,
-    image: Option<Arc<ImmutableImage>>,
 }
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Zeroable, Pod)]
@@ -132,15 +131,8 @@ impl<T> DrawLayer<T> for CopyDrawLayer {
             .build(setup_info.device.clone())
             .expect("Could not build pipeline");
 
-        self.device = Some(setup_info.device.clone());
-        self.pipeline = Some(pipeline);
-        self.vertex_buffer = Some(vertex_buffer);
-        //self.descriptor_set = Some(descriptor_set);
-        self.descriptor_set = None;
-    }
-    fn draw(&mut self, draw_info: &mut DrawInfo<T>) {
         let sampler = Sampler::new(
-            self.device.as_ref().unwrap().clone(),
+            setup_info.device.clone(),
             SamplerCreateInfo {
                 min_filter: Filter::Nearest,
                 mag_filter: Filter::Nearest,
@@ -150,17 +142,13 @@ impl<T> DrawLayer<T> for CopyDrawLayer {
         )
         .expect("Could not create sampler");
 
-        let layout = self
-            .pipeline
-            .as_ref()
-            .unwrap()
+        let layout = pipeline
             .layout()
             .set_layouts()
             .get(0)
             .expect("Could not get layout");
 
-        let texture =
-            ImageView::new_default(draw_info.the_image.as_ref().unwrap().clone()).unwrap();
+        let texture = ImageView::new_default(setup_info.pre_destination_image.clone()).unwrap();
 
         let descriptor_set = PersistentDescriptorSet::new(
             layout.clone(),
@@ -168,6 +156,12 @@ impl<T> DrawLayer<T> for CopyDrawLayer {
         )
         .expect("Could not create descriptor set");
 
+        self.device = Some(setup_info.device.clone());
+        self.pipeline = Some(pipeline);
+        self.vertex_buffer = Some(vertex_buffer);
+        self.descriptor_set = Some(descriptor_set);
+    }
+    fn draw(&mut self, draw_info: &mut DrawInfo<T>) {
         draw_info
             .gpu_interface
             .command_buffer_builder
@@ -177,8 +171,7 @@ impl<T> DrawLayer<T> for CopyDrawLayer {
                 PipelineBindPoint::Graphics,
                 self.pipeline.as_ref().as_mut().unwrap().layout().clone(),
                 0,
-                descriptor_set,
-                //self.descriptor_set.as_ref().unwrap().clone(),
+                self.descriptor_set.as_ref().unwrap().clone(),
             )
             .draw(self.vertex_buffer.as_ref().unwrap().len() as u32, 1, 0, 0)
             .unwrap();

@@ -52,13 +52,13 @@ pub struct SetupInfo<'a, T> {
     pub device: Arc<Device>,
     pub queue: Arc<Queue>,
     pub render_pass: Arc<RenderPass>,
+    pub pre_destination_image: Arc<StorageImage>,
 }
 
 pub struct DrawInfo<'a, 'b, T> {
     pub gpu_interface: &'a mut GpuInterface<'b>,
     pub meta: &'a mut Meta<'b>,
     pub state: &'a mut T,
-    pub the_image: Option<Arc<StorageImage>>,
 }
 
 pub trait DrawLayer<T> {
@@ -235,6 +235,7 @@ pub fn render<T: 'static>(
             device: device.clone(),
             queue: queue.clone(),
             render_pass: pre_render_pass.clone(),
+            pre_destination_image: pre_destination_image.clone(),
         };
         for pre_layer in pre_layers.iter_mut() {
             pre_layer.borrow_mut().setup(&mut setup_info);
@@ -246,6 +247,7 @@ pub fn render<T: 'static>(
             device: device.clone(),
             queue: queue.clone(),
             render_pass: render_pass.clone(),
+            pre_destination_image: pre_destination_image.clone(),
         };
         for layer in layers.iter_mut() {
             layer.borrow_mut().setup(&mut setup_info);
@@ -426,7 +428,6 @@ pub fn render<T: 'static>(
                         gpu_interface: &mut gpu_interface,
                         meta: &mut meta,
                         state: &mut state,
-                        the_image: None,
                     };
 
                     for pre_layer in pre_layers.iter_mut() {
@@ -490,7 +491,6 @@ pub fn render<T: 'static>(
                     gpu_interface: &mut gpu_interface,
                     meta: &mut meta,
                     state: &mut state,
-                    the_image: Some(pre_destination_image.clone()),
                 };
 
                 // Draw each layer
