@@ -11,15 +11,22 @@ use std::{
     time::{Duration, Instant},
 };
 use vulkano::{
+    buffer::{BufferUsage, CpuAccessibleBuffer},
     command_buffer::{
-        AutoCommandBufferBuilder, CommandBufferUsage, PrimaryAutoCommandBuffer,
-        RenderPassBeginInfo, SubpassContents,
+        AutoCommandBufferBuilder, BlitImageInfo, CommandBufferUsage, CopyBufferToImageInfo,
+        ImageBlit, PrimaryAutoCommandBuffer, PrimaryCommandBuffer, RenderPassBeginInfo,
+        SubpassContents,
     },
     device::{Device, Queue},
     format::Format,
-    image::{view::ImageView, AttachmentImage},
+    image::{
+        view::{ImageView, ImageViewCreateInfo},
+        AttachmentImage, ImageAccess, ImageCreateFlags, ImageDimensions, ImageLayout, ImageUsage,
+        ImmutableImage, MipmapsCount, StorageImage,
+    },
     pipeline::graphics::viewport::Viewport,
     render_pass::{Framebuffer, FramebufferCreateInfo, RenderPass},
+    sampler::Filter,
     swapchain::{
         acquire_next_image, AcquireError, PresentInfo, SwapchainCreateInfo, SwapchainCreationError,
     },
@@ -35,6 +42,7 @@ mod util;
 
 pub use layers::{
     basic::BasicTriangleDrawLayer,
+    copy::CopyDrawLayer,
     text::{TextDrawLayer, TextEnqueueRequest},
 };
 pub use winit::event::VirtualKeyCode;
@@ -50,6 +58,7 @@ pub struct DrawInfo<'a, 'b, T> {
     pub gpu_interface: &'a mut GpuInterface<'b>,
     pub meta: &'a mut Meta<'b>,
     pub state: &'a mut T,
+    pub the_image: Option<Arc<StorageImage>>,
 }
 
 pub trait DrawLayer<T> {
@@ -142,8 +151,17 @@ pub fn render<T: 'static>(
     let (mut swapchain, images) = create_swapchain(device.clone(), surface.clone());
 
     // Custom render pass
-    let pre_image =
-        AttachmentImage::new(device.clone(), [500, 500], Format::R8G8B8A8_UNORM).unwrap();
+    let pre_image = AttachmentImage::with_usage(
+        device.clone(),
+        [500, 500],
+        Format::R8G8B8A8_UNORM,
+        ImageUsage {
+            color_attachment: true,
+            transfer_src: true,
+            ..ImageUsage::empty()
+        },
+    )
+    .unwrap();
     let pre_image_view = ImageView::new_default(pre_image.clone()).unwrap();
     let pre_render_pass = vulkano::single_pass_renderpass!(
         device.clone(),
@@ -167,6 +185,17 @@ pub fn render<T: 'static>(
             attachments: vec![pre_image_view],
             ..Default::default()
         },
+    )
+    .unwrap();
+    let pre_destination_image = StorageImage::new(
+        device.clone(),
+        ImageDimensions::Dim2d {
+            width: 512,
+            height: 512,
+            array_layers: 1,
+        },
+        Format::R8G8B8A8_UNORM,
+        [queue.queue_family_index()],
     )
     .unwrap();
 
@@ -397,6 +426,7 @@ pub fn render<T: 'static>(
                         gpu_interface: &mut gpu_interface,
                         meta: &mut meta,
                         state: &mut state,
+                        the_image: None,
                     };
 
                     for pre_layer in pre_layers.iter_mut() {
@@ -406,6 +436,24 @@ pub fn render<T: 'static>(
                     command_buffer_builder.end_render_pass().unwrap();
                 }
                 // END Pre Renderpass
+
+                command_buffer_builder
+                    .blit_image(BlitImageInfo {
+                        // Same for blitting.
+                        src_image_layout: ImageLayout::General,
+                        dst_image_layout: ImageLayout::General,
+                        regions: [ImageBlit {
+                            src_subresource: pre_image.subresource_layers(),
+                            src_offsets: [[0, 0, 0], [500, 500, 1]],
+                            dst_subresource: pre_destination_image.subresource_layers(),
+                            dst_offsets: [[0, 0, 0], [250, 250, 1]],
+                            ..Default::default()
+                        }]
+                        .into(),
+                        filter: Filter::Nearest,
+                        ..BlitImageInfo::images(pre_image.clone(), pre_destination_image.clone())
+                    })
+                    .unwrap();
 
                 command_buffer_builder
                     .begin_render_pass(
@@ -442,6 +490,7 @@ pub fn render<T: 'static>(
                     gpu_interface: &mut gpu_interface,
                     meta: &mut meta,
                     state: &mut state,
+                    the_image: Some(pre_destination_image.clone()),
                 };
 
                 // Draw each layer
