@@ -1,4 +1,4 @@
-use crate::{DrawInfo, DrawLayer, SetupInfo};
+use crate::{DrawLayer, LayerDrawContext, LayerSetupContext, MyState};
 use bytemuck::{Pod, Zeroable};
 use std::{fmt::Debug, sync::Arc};
 use vulkano::{
@@ -39,8 +39,8 @@ struct Vertex {
     uv: [f32; 2],
 }
 impl_vertex!(Vertex, position, uv);
-impl<T> DrawLayer<T> for CopyDrawLayer {
-    fn setup(&mut self, setup_info: &mut SetupInfo<T>) {
+impl DrawLayer<MyState> for CopyDrawLayer {
+    fn setup(&mut self, setup_context: &mut LayerSetupContext<MyState>) {
         let vertices = [
             Vertex {
                 position: [-0.5, -0.5],
@@ -68,7 +68,7 @@ impl<T> DrawLayer<T> for CopyDrawLayer {
             },
         ];
         let vertex_buffer = CpuAccessibleBuffer::from_iter(
-            setup_info.device.clone(),
+            setup_context.device.clone(),
             BufferUsage {
                 vertex_buffer: true,
                 ..BufferUsage::empty()
@@ -116,11 +116,11 @@ impl<T> DrawLayer<T> for CopyDrawLayer {
             }
         }
 
-        let vs = vs::load(setup_info.device.clone()).expect("Could not load vertex shader");
-        let fs = fs::load(setup_info.device.clone()).expect("Could not load fragment shader");
+        let vs = vs::load(setup_context.device.clone()).expect("Could not load vertex shader");
+        let fs = fs::load(setup_context.device.clone()).expect("Could not load fragment shader");
 
         let pipeline = GraphicsPipeline::start()
-            .render_pass(Subpass::from(setup_info.render_pass.clone(), 0).unwrap())
+            .render_pass(Subpass::from(setup_context.render_pass.clone(), 0).unwrap())
             .vertex_input_state(BuffersDefinition::new().vertex::<Vertex>())
             .input_assembly_state(
                 InputAssemblyState::new().topology(PrimitiveTopology::TriangleList),
@@ -128,11 +128,11 @@ impl<T> DrawLayer<T> for CopyDrawLayer {
             .vertex_shader(vs.entry_point("main").unwrap(), ())
             .viewport_state(ViewportState::viewport_dynamic_scissor_irrelevant())
             .fragment_shader(fs.entry_point("main").unwrap(), ())
-            .build(setup_info.device.clone())
+            .build(setup_context.device.clone())
             .expect("Could not build pipeline");
 
         let sampler = Sampler::new(
-            setup_info.device.clone(),
+            setup_context.device.clone(),
             SamplerCreateInfo {
                 min_filter: Filter::Nearest,
                 mag_filter: Filter::Nearest,
@@ -148,7 +148,15 @@ impl<T> DrawLayer<T> for CopyDrawLayer {
             .get(0)
             .expect("Could not get layout");
 
-        let texture = ImageView::new_default(setup_info.pre_destination_image.clone()).unwrap();
+        let texture = ImageView::new_default(
+            setup_context
+                .state
+                .other_pass_result_image
+                .as_ref()
+                .unwrap()
+                .clone(),
+        )
+        .unwrap();
 
         let descriptor_set = PersistentDescriptorSet::new(
             layout.clone(),
@@ -156,14 +164,13 @@ impl<T> DrawLayer<T> for CopyDrawLayer {
         )
         .expect("Could not create descriptor set");
 
-        self.device = Some(setup_info.device.clone());
+        self.device = Some(setup_context.device.clone());
         self.pipeline = Some(pipeline);
         self.vertex_buffer = Some(vertex_buffer);
         self.descriptor_set = Some(descriptor_set);
     }
-    fn draw(&mut self, draw_info: &mut DrawInfo<T>) {
-        draw_info
-            .gpu_interface
+    fn draw(&mut self, draw_context: &mut LayerDrawContext<MyState>) {
+        draw_context
             .command_buffer_builder
             .bind_pipeline_graphics(self.pipeline.as_ref().unwrap().clone())
             .bind_vertex_buffers(0, self.vertex_buffer.as_ref().unwrap().clone())

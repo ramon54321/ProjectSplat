@@ -1,4 +1,4 @@
-use crate::{DrawInfo, DrawLayer, SetupInfo};
+use crate::{DrawLayer, LayerDrawContext, LayerSetupContext};
 use bytemuck::{Pod, Zeroable};
 use std::{fmt::Debug, sync::Arc};
 use vulkano::{
@@ -27,7 +27,7 @@ struct Vertex {
 }
 impl_vertex!(Vertex, position);
 impl<T> DrawLayer<T> for BasicTriangleDrawLayer {
-    fn setup(&mut self, setup_info: &mut SetupInfo<T>) {
+    fn setup(&mut self, setup_context: &mut LayerSetupContext<T>) {
         let vertices = [
             Vertex {
                 position: [-0.5, -0.25],
@@ -40,7 +40,7 @@ impl<T> DrawLayer<T> for BasicTriangleDrawLayer {
             },
         ];
         let vertex_buffer = CpuAccessibleBuffer::from_iter(
-            setup_info.device.clone(),
+            setup_context.device.clone(),
             BufferUsage {
                 vertex_buffer: true,
                 ..BufferUsage::empty()
@@ -80,11 +80,11 @@ impl<T> DrawLayer<T> for BasicTriangleDrawLayer {
             }
         }
 
-        let vs = vs::load(setup_info.device.clone()).expect("Could not load vertex shader");
-        let fs = fs::load(setup_info.device.clone()).expect("Could not load fragment shader");
+        let vs = vs::load(setup_context.device.clone()).expect("Could not load vertex shader");
+        let fs = fs::load(setup_context.device.clone()).expect("Could not load fragment shader");
 
         let pipeline = GraphicsPipeline::start()
-            .render_pass(Subpass::from(setup_info.render_pass.clone(), 0).unwrap())
+            .render_pass(Subpass::from(setup_context.render_pass.clone(), 0).unwrap())
             .vertex_input_state(BuffersDefinition::new().vertex::<Vertex>())
             .input_assembly_state(
                 InputAssemblyState::new().topology(PrimitiveTopology::TriangleList),
@@ -92,15 +92,14 @@ impl<T> DrawLayer<T> for BasicTriangleDrawLayer {
             .vertex_shader(vs.entry_point("main").unwrap(), ())
             .viewport_state(ViewportState::viewport_dynamic_scissor_irrelevant())
             .fragment_shader(fs.entry_point("main").unwrap(), ())
-            .build(setup_info.device.clone())
+            .build(setup_context.device.clone())
             .expect("Could not build pipeline");
 
         self.pipeline = Some(pipeline);
         self.vertex_buffer = Some(vertex_buffer);
     }
-    fn draw(&mut self, draw_info: &mut DrawInfo<T>) {
-        draw_info
-            .gpu_interface
+    fn draw(&mut self, draw_context: &mut LayerDrawContext<T>) {
+        draw_context
             .command_buffer_builder
             .bind_pipeline_graphics(self.pipeline.as_ref().unwrap().clone())
             .bind_vertex_buffers(0, self.vertex_buffer.as_ref().unwrap().clone())

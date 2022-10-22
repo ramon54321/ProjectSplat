@@ -47,23 +47,41 @@ pub use layers::{
 };
 pub use winit::event::VirtualKeyCode;
 
-pub struct SetupInfo<'a, T> {
+pub struct MyState {
+    pub other_pass_result_image: Option<Arc<StorageImage>>,
+}
+
+pub struct LayerSetupContext<'a, T> {
     pub state: &'a mut T,
     pub device: Arc<Device>,
     pub queue: Arc<Queue>,
     pub render_pass: Arc<RenderPass>,
-    pub pre_destination_image: Arc<StorageImage>,
 }
 
-pub struct DrawInfo<'a, 'b, T> {
-    pub gpu_interface: &'a mut GpuInterface<'b>,
-    pub meta: &'a mut Meta<'b>,
+pub struct LayerDrawContext<'a, 'b, T> {
     pub state: &'a mut T,
+    pub meta: &'a mut Meta<'b>,
+    pub viewport: Viewport,
+    pub command_buffer_builder: &'a mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
+}
+
+pub struct SetupContext<'a, T> {
+    pub state: &'a mut T,
+    pub device: Arc<Device>,
+    pub queue: Arc<Queue>,
+}
+
+pub struct DrawContext<'a, 'b, T> {
+    pub state: &'a mut T,
+    pub meta: &'a mut Meta<'b>,
+    pub viewport: Viewport,
+    pub device: Arc<Device>,
+    pub queue: Arc<Queue>,
 }
 
 pub trait DrawLayer<T> {
-    fn setup(&mut self, setup_info: &mut SetupInfo<T>);
-    fn draw(&mut self, draw_info: &mut DrawInfo<T>);
+    fn setup(&mut self, setup_context: &mut LayerSetupContext<T>);
+    fn draw(&mut self, draw_context: &mut LayerDrawContext<T>);
 }
 
 pub enum AlignHorizontal {
@@ -80,7 +98,6 @@ pub enum AlignVertical {
 pub struct Meta<'a> {
     pub frames_per_second: usize,
     pub was_swapchain_rebuilt: bool,
-    pub layer_durations: Vec<Duration>,
     pub delta_time: Duration,
     pub mouse_position: Vec2,
     pub is_mouse_down: bool,
@@ -90,10 +107,10 @@ pub struct Meta<'a> {
     pub keys_down: &'a HashSet<VirtualKeyCode>,
 }
 
-pub struct GpuInterface<'a> {
-    pub command_buffer_builder: &'a mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
-    pub viewport: Viewport,
-}
+//pub struct GpuInterface<'a> {
+//pub command_buffer_builder: &'a mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
+//pub viewport: Viewport,
+//}
 
 #[derive(Debug, Clone)]
 pub struct SplatCreateInfo {
@@ -120,8 +137,8 @@ impl Default for SplatCreateInfo {
 pub fn render<T: 'static>(
     splat_create_info: SplatCreateInfo,
     mut state: T,
-    mut pre_layers: Vec<Rc<RefCell<dyn DrawLayer<T>>>>,
-    mut layers: Vec<Rc<RefCell<dyn DrawLayer<T>>>>,
+    setup: fn(setup_context: &mut SetupContext<T>),
+    draw: fn(draw_context: &mut DrawContext<T>) -> PrimaryAutoCommandBuffer,
 ) {
     let event_loop = EventLoop::new();
 
@@ -229,30 +246,37 @@ pub fn render<T: 'static>(
     let mut framebuffers = create_framebuffers(&images, render_pass.clone(), &mut viewport);
 
     // Set up render layers
-    {
-        let mut setup_info = SetupInfo {
-            state: &mut state,
-            device: device.clone(),
-            queue: queue.clone(),
-            render_pass: pre_render_pass.clone(),
-            pre_destination_image: pre_destination_image.clone(),
-        };
-        for pre_layer in pre_layers.iter_mut() {
-            pre_layer.borrow_mut().setup(&mut setup_info);
-        }
-    }
-    {
-        let mut setup_info = SetupInfo {
-            state: &mut state,
-            device: device.clone(),
-            queue: queue.clone(),
-            render_pass: render_pass.clone(),
-            pre_destination_image: pre_destination_image.clone(),
-        };
-        for layer in layers.iter_mut() {
-            layer.borrow_mut().setup(&mut setup_info);
-        }
-    }
+    //{
+    //let mut setup_info = SetupInfo {
+    //state: &mut state,
+    //device: device.clone(),
+    //queue: queue.clone(),
+    //render_pass: pre_render_pass.clone(),
+    //pre_destination_image: pre_destination_image.clone(),
+    //};
+    //for pre_layer in pre_layers.iter_mut() {
+    //pre_layer.borrow_mut().setup(&mut setup_info);
+    //}
+    //}
+    //{
+    //let mut setup_info = SetupInfo {
+    //state: &mut state,
+    //device: device.clone(),
+    //queue: queue.clone(),
+    //render_pass: render_pass.clone(),
+    //pre_destination_image: pre_destination_image.clone(),
+    //};
+    //for layer in layers.iter_mut() {
+    //layer.borrow_mut().setup(&mut setup_info);
+    //}
+    //}
+
+    let mut setup_context = SetupContext {
+        device: device.clone(),
+        queue: queue.clone(),
+        state: &mut state,
+    };
+    setup(&mut setup_context);
 
     // Settings
     let clear_color = splat_create_info.clear_color;
@@ -262,7 +286,7 @@ pub fn render<T: 'static>(
     let mut previous_frame_end = Some(sync::now(device.clone()).boxed());
 
     // Framerate management
-    let mut layer_durations = Vec::new();
+    //let mut layer_durations = Vec::new();
     let mut frame_timer = Instant::now();
     let mut frame_second_timer = Instant::now();
     let mut frame_counter = 0;
@@ -387,94 +411,13 @@ pub fn render<T: 'static>(
                     is_swapchain_invalid = true;
                 }
 
-                let mut command_buffer_builder = AutoCommandBufferBuilder::primary(
-                    device.clone(),
-                    queue.queue_family_index(),
-                    CommandBufferUsage::OneTimeSubmit,
-                )
-                .expect("Could not create command buffer");
+                //
+                // START: Command Buffer Building
+                //
 
-                // Pre Renderpass
-                {
-                    command_buffer_builder
-                        .begin_render_pass(
-                            RenderPassBeginInfo {
-                                clear_values: vec![Some([0.0, 0.0, 1.0, 1.0].into())],
-                                ..RenderPassBeginInfo::framebuffer(pre_framebuffer.clone())
-                            },
-                            SubpassContents::Inline,
-                        )
-                        .unwrap()
-                        .set_viewport(0, [viewport.clone()]);
-
-                    // Setup draw info
-                    let mut meta = Meta {
-                        frames_per_second,
-                        was_swapchain_rebuilt,
-                        layer_durations: layer_durations.clone(),
-                        delta_time,
-                        mouse_position,
-                        is_mouse_down,
-                        is_mouse_released,
-                        keys_hold: &keys_hold,
-                        keys_down: &keys_down,
-                        keys_up: &keys_up,
-                    };
-                    let mut gpu_interface = GpuInterface {
-                        command_buffer_builder: &mut command_buffer_builder,
-                        viewport: viewport.clone(),
-                    };
-                    let mut draw_info = DrawInfo {
-                        gpu_interface: &mut gpu_interface,
-                        meta: &mut meta,
-                        state: &mut state,
-                    };
-
-                    for pre_layer in pre_layers.iter_mut() {
-                        pre_layer.borrow_mut().draw(&mut draw_info);
-                    }
-
-                    command_buffer_builder.end_render_pass().unwrap();
-                }
-                // END Pre Renderpass
-
-                command_buffer_builder
-                    .blit_image(BlitImageInfo {
-                        // Same for blitting.
-                        src_image_layout: ImageLayout::General,
-                        dst_image_layout: ImageLayout::General,
-                        regions: [ImageBlit {
-                            src_subresource: pre_image.subresource_layers(),
-                            src_offsets: [[0, 0, 0], [500, 500, 1]],
-                            dst_subresource: pre_destination_image.subresource_layers(),
-                            dst_offsets: [[0, 0, 0], [250, 250, 1]],
-                            ..Default::default()
-                        }]
-                        .into(),
-                        filter: Filter::Nearest,
-                        ..BlitImageInfo::images(pre_image.clone(), pre_destination_image.clone())
-                    })
-                    .unwrap();
-
-                command_buffer_builder
-                    .begin_render_pass(
-                        RenderPassBeginInfo {
-                            // Clear value for 'color' attachment
-                            clear_values: vec![Some(clear_color.into())],
-                            ..RenderPassBeginInfo::framebuffer(
-                                framebuffers[framebuffer_image_index as usize].clone(),
-                            )
-                        },
-                        SubpassContents::Inline,
-                    )
-                    .unwrap()
-                    .set_viewport(0, [viewport.clone()]);
-
-                // Setup draw info
                 let mut meta = Meta {
                     frames_per_second,
                     was_swapchain_rebuilt,
-                    layer_durations: layer_durations.clone(),
                     delta_time,
                     mouse_position,
                     is_mouse_down,
@@ -483,30 +426,145 @@ pub fn render<T: 'static>(
                     keys_down: &keys_down,
                     keys_up: &keys_up,
                 };
-                let mut gpu_interface = GpuInterface {
-                    command_buffer_builder: &mut command_buffer_builder,
-                    viewport: viewport.clone(),
-                };
-                let mut draw_info = DrawInfo {
-                    gpu_interface: &mut gpu_interface,
-                    meta: &mut meta,
+                //let mut gpu_interface = GpuInterface {
+                //command_buffer_builder: &mut command_buffer_builder,
+                //viewport: viewport.clone(),
+                //};
+                let mut draw_context = DrawContext {
+                    //gpu_interface: &mut gpu_interface,
                     state: &mut state,
+                    meta: &mut meta,
+                    viewport: viewport.clone(),
+                    device: device.clone(),
+                    queue: queue.clone(),
                 };
 
-                // Draw each layer
-                layer_durations.clear();
-                for layer in layers.iter_mut() {
-                    let timer = Instant::now();
+                let command_buffer = draw(&mut draw_context);
 
-                    layer.borrow_mut().draw(&mut draw_info);
+                //let mut command_buffer_builder = AutoCommandBufferBuilder::primary(
+                //device.clone(),
+                //queue.queue_family_index(),
+                //CommandBufferUsage::OneTimeSubmit,
+                //)
+                //.expect("Could not create command buffer");
 
-                    let duration = Instant::now() - timer;
-                    layer_durations.push(duration);
-                }
+                //// Pre Renderpass
+                //{
+                //command_buffer_builder
+                //.begin_render_pass(
+                //RenderPassBeginInfo {
+                //clear_values: vec![Some([0.0, 0.0, 1.0, 1.0].into())],
+                //..RenderPassBeginInfo::framebuffer(pre_framebuffer.clone())
+                //},
+                //SubpassContents::Inline,
+                //)
+                //.unwrap()
+                //.set_viewport(0, [viewport.clone()]);
 
-                command_buffer_builder.end_render_pass().unwrap();
+                //// Setup draw info
+                //let mut meta = Meta {
+                //frames_per_second,
+                //was_swapchain_rebuilt,
+                //layer_durations: layer_durations.clone(),
+                //delta_time,
+                //mouse_position,
+                //is_mouse_down,
+                //is_mouse_released,
+                //keys_hold: &keys_hold,
+                //keys_down: &keys_down,
+                //keys_up: &keys_up,
+                //};
+                //let mut gpu_interface = GpuInterface {
+                //command_buffer_builder: &mut command_buffer_builder,
+                //viewport: viewport.clone(),
+                //};
+                //let mut draw_info = DrawInfo {
+                //gpu_interface: &mut gpu_interface,
+                //meta: &mut meta,
+                //state: &mut state,
+                //};
 
-                let command_buffer = command_buffer_builder.build().unwrap();
+                //for pre_layer in pre_layers.iter_mut() {
+                //pre_layer.borrow_mut().draw(&mut draw_info);
+                //}
+
+                //command_buffer_builder.end_render_pass().unwrap();
+                //}
+                // END Pre Renderpass
+
+                //command_buffer_builder
+                //.blit_image(BlitImageInfo {
+                //// Same for blitting.
+                //src_image_layout: ImageLayout::General,
+                //dst_image_layout: ImageLayout::General,
+                //regions: [ImageBlit {
+                //src_subresource: pre_image.subresource_layers(),
+                //src_offsets: [[0, 0, 0], [500, 500, 1]],
+                //dst_subresource: pre_destination_image.subresource_layers(),
+                //dst_offsets: [[0, 0, 0], [250, 250, 1]],
+                //..Default::default()
+                //}]
+                //.into(),
+                //filter: Filter::Nearest,
+                //..BlitImageInfo::images(pre_image.clone(), pre_destination_image.clone())
+                //})
+                //.unwrap();
+
+                //command_buffer_builder
+                //.begin_render_pass(
+                //RenderPassBeginInfo {
+                //// Clear value for 'color' attachment
+                //clear_values: vec![Some(clear_color.into())],
+                //..RenderPassBeginInfo::framebuffer(
+                //framebuffers[framebuffer_image_index as usize].clone(),
+                //)
+                //},
+                //SubpassContents::Inline,
+                //)
+                //.unwrap()
+                //.set_viewport(0, [viewport.clone()]);
+
+                //// Setup draw info
+                //let mut meta = Meta {
+                //frames_per_second,
+                //was_swapchain_rebuilt,
+                //layer_durations: layer_durations.clone(),
+                //delta_time,
+                //mouse_position,
+                //is_mouse_down,
+                //is_mouse_released,
+                //keys_hold: &keys_hold,
+                //keys_down: &keys_down,
+                //keys_up: &keys_up,
+                //};
+                //let mut gpu_interface = GpuInterface {
+                //command_buffer_builder: &mut command_buffer_builder,
+                //viewport: viewport.clone(),
+                //};
+                //let mut draw_info = DrawInfo {
+                //gpu_interface: &mut gpu_interface,
+                //meta: &mut meta,
+                //state: &mut state,
+                //};
+
+                //// Draw each layer
+                //layer_durations.clear();
+                //for layer in layers.iter_mut() {
+                //let timer = Instant::now();
+
+                //layer.borrow_mut().draw(&mut draw_info);
+
+                //let duration = Instant::now() - timer;
+                //layer_durations.push(duration);
+                //}
+
+                //command_buffer_builder.end_render_pass().unwrap();
+
+                //
+                // END: Command Buffer Building
+                //
+
+                //let command_buffer = command_buffer_builder.build().unwrap();
 
                 let future = previous_frame_end
                     .take()
