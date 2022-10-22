@@ -16,8 +16,10 @@ use vulkano::{
         RenderPassBeginInfo, SubpassContents,
     },
     device::{Device, Queue},
+    format::Format,
+    image::{view::ImageView, AttachmentImage},
     pipeline::graphics::viewport::Viewport,
-    render_pass::RenderPass,
+    render_pass::{Framebuffer, FramebufferCreateInfo, RenderPass},
     swapchain::{
         acquire_next_image, AcquireError, PresentInfo, SwapchainCreateInfo, SwapchainCreationError,
     },
@@ -109,6 +111,7 @@ impl Default for SplatCreateInfo {
 pub fn render<T: 'static>(
     splat_create_info: SplatCreateInfo,
     mut state: T,
+    mut pre_layers: Vec<Rc<RefCell<dyn DrawLayer<T>>>>,
     mut layers: Vec<Rc<RefCell<dyn DrawLayer<T>>>>,
 ) {
     let event_loop = EventLoop::new();
@@ -137,6 +140,35 @@ pub fn render<T: 'static>(
         queue_family_index,
     );
     let (mut swapchain, images) = create_swapchain(device.clone(), surface.clone());
+
+    // Custom render pass
+    let pre_image =
+        AttachmentImage::new(device.clone(), [500, 500], Format::R8G8B8A8_UNORM).unwrap();
+    let pre_image_view = ImageView::new_default(pre_image.clone()).unwrap();
+    let pre_render_pass = vulkano::single_pass_renderpass!(
+        device.clone(),
+        attachments: {
+            color: {
+                load: Clear,
+                store: Store,
+                format: Format::R8G8B8A8_UNORM,
+                samples: 1,
+            }
+        },
+        pass: {
+            color: [color],
+            depth_stencil: {}
+        }
+    )
+    .expect("Could not create pre render pass");
+    let pre_framebuffer = Framebuffer::new(
+        pre_render_pass.clone(),
+        FramebufferCreateInfo {
+            attachments: vec![pre_image_view],
+            ..Default::default()
+        },
+    )
+    .unwrap();
 
     let render_pass = vulkano::single_pass_renderpass!(
         device.clone(),
@@ -168,14 +200,27 @@ pub fn render<T: 'static>(
     let mut framebuffers = create_framebuffers(&images, render_pass.clone(), &mut viewport);
 
     // Set up render layers
-    for layer in layers.iter_mut() {
+    {
+        let mut setup_info = SetupInfo {
+            state: &mut state,
+            device: device.clone(),
+            queue: queue.clone(),
+            render_pass: pre_render_pass.clone(),
+        };
+        for pre_layer in pre_layers.iter_mut() {
+            pre_layer.borrow_mut().setup(&mut setup_info);
+        }
+    }
+    {
         let mut setup_info = SetupInfo {
             state: &mut state,
             device: device.clone(),
             queue: queue.clone(),
             render_pass: render_pass.clone(),
         };
-        layer.borrow_mut().setup(&mut setup_info);
+        for layer in layers.iter_mut() {
+            layer.borrow_mut().setup(&mut setup_info);
+        }
     }
 
     // Settings
@@ -318,6 +363,50 @@ pub fn render<T: 'static>(
                 )
                 .expect("Could not create command buffer");
 
+                // Pre Renderpass
+                {
+                    command_buffer_builder
+                        .begin_render_pass(
+                            RenderPassBeginInfo {
+                                clear_values: vec![Some([0.0, 0.0, 1.0, 1.0].into())],
+                                ..RenderPassBeginInfo::framebuffer(pre_framebuffer.clone())
+                            },
+                            SubpassContents::Inline,
+                        )
+                        .unwrap()
+                        .set_viewport(0, [viewport.clone()]);
+
+                    // Setup draw info
+                    let mut meta = Meta {
+                        frames_per_second,
+                        was_swapchain_rebuilt,
+                        layer_durations: layer_durations.clone(),
+                        delta_time,
+                        mouse_position,
+                        is_mouse_down,
+                        is_mouse_released,
+                        keys_hold: &keys_hold,
+                        keys_down: &keys_down,
+                        keys_up: &keys_up,
+                    };
+                    let mut gpu_interface = GpuInterface {
+                        command_buffer_builder: &mut command_buffer_builder,
+                        viewport: viewport.clone(),
+                    };
+                    let mut draw_info = DrawInfo {
+                        gpu_interface: &mut gpu_interface,
+                        meta: &mut meta,
+                        state: &mut state,
+                    };
+
+                    for pre_layer in pre_layers.iter_mut() {
+                        pre_layer.borrow_mut().draw(&mut draw_info);
+                    }
+
+                    command_buffer_builder.end_render_pass().unwrap();
+                }
+                // END Pre Renderpass
+
                 command_buffer_builder
                     .begin_render_pass(
                         RenderPassBeginInfo {
@@ -332,7 +421,7 @@ pub fn render<T: 'static>(
                     .unwrap()
                     .set_viewport(0, [viewport.clone()]);
 
-                // Construct state for current frame
+                // Setup draw info
                 let mut meta = Meta {
                     frames_per_second,
                     was_swapchain_rebuilt,
@@ -345,22 +434,20 @@ pub fn render<T: 'static>(
                     keys_down: &keys_down,
                     keys_up: &keys_up,
                 };
-
                 let mut gpu_interface = GpuInterface {
                     command_buffer_builder: &mut command_buffer_builder,
                     viewport: viewport.clone(),
+                };
+                let mut draw_info = DrawInfo {
+                    gpu_interface: &mut gpu_interface,
+                    meta: &mut meta,
+                    state: &mut state,
                 };
 
                 // Draw each layer
                 layer_durations.clear();
                 for layer in layers.iter_mut() {
                     let timer = Instant::now();
-
-                    let mut draw_info = DrawInfo {
-                        gpu_interface: &mut gpu_interface,
-                        meta: &mut meta,
-                        state: &mut state,
-                    };
 
                     layer.borrow_mut().draw(&mut draw_info);
 
