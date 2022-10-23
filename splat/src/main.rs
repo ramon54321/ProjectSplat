@@ -251,6 +251,8 @@ fn build_offscreen_render_pass(
         state: build_context.state,
         meta: build_context.meta,
         viewport: build_context.viewport.clone(),
+        device: build_context.device.clone(),
+        queue: build_context.queue.clone(),
         command_buffer_builder,
     };
     <BasicTriangleDrawLayer as DrawLayer<MyState, MySetupState>>::build(
@@ -324,6 +326,8 @@ fn build_swapchain_render_pass(
         state: build_context.state,
         meta: build_context.meta,
         viewport: build_context.viewport.clone(),
+        device: build_context.device.clone(),
+        queue: build_context.queue.clone(),
         command_buffer_builder,
     };
     build_context

@@ -46,6 +46,8 @@ pub struct LayerBuildContext<'a, 'b, T> {
     pub state: &'a mut T,
     pub meta: &'a mut Meta<'b>,
     pub viewport: Viewport,
+    pub device: Arc<Device>,
+    pub queue: Arc<Queue>,
     pub command_buffer_builder: &'a mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
 }
 
