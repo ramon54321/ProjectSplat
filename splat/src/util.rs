@@ -179,7 +179,7 @@ pub fn create_swapchain(
     .expect("Could not create swapchain")
 }
 
-pub fn create_framebuffers(
+pub fn create_framebuffers_from_swapchain(
     images: &[Arc<SwapchainImage<Window>>],
     render_pass: Arc<RenderPass>,
     viewport: &mut Viewport,

@@ -1,21 +1,33 @@
+use bytemuck::{Pod, Zeroable};
 use splat::{
-    render, BasicTriangleDrawLayer, CopyDrawLayer, DrawContext, DrawLayer, LayerDrawContext,
-    LayerSetupContext, Meta, MySetupState, MyState, SetupContext, SetupResponse, SplatCreateInfo,
-    TextDrawLayer,
+    render, BasicTriangleDrawLayer, BuildContext, DrawLayer, LayerBuildContext, LayerSetupContext,
+    SetupContext, SetupResponse, SplatCreateInfo,
 };
-use std::{cell::RefCell, rc::Rc, sync::Arc};
+use std::sync::Arc;
 use vulkano::{
+    buffer::{BufferUsage, CpuAccessibleBuffer, TypedBufferAccess},
     command_buffer::{
         AutoCommandBufferBuilder, BlitImageInfo, CommandBufferUsage, ImageBlit,
         PrimaryAutoCommandBuffer, RenderPassBeginInfo, SubpassContents,
     },
+    descriptor_set::{PersistentDescriptorSet, WriteDescriptorSet},
+    device::Device,
     format::Format,
     image::{
         view::ImageView, AttachmentImage, ImageAccess, ImageDimensions, ImageLayout, ImageUsage,
         StorageImage,
     },
-    render_pass::{Framebuffer, FramebufferCreateInfo, RenderPass},
-    sampler::Filter,
+    impl_vertex,
+    pipeline::{
+        graphics::{
+            input_assembly::{InputAssemblyState, PrimitiveTopology},
+            vertex_input::BuffersDefinition,
+            viewport::ViewportState,
+        },
+        GraphicsPipeline, Pipeline, PipelineBindPoint,
+    },
+    render_pass::{Framebuffer, FramebufferCreateInfo, RenderPass, Subpass},
+    sampler::{Filter, Sampler, SamplerCreateInfo, SamplerMipmapMode},
 };
 
 fn main() {
@@ -24,8 +36,38 @@ fn main() {
         MyState {},
         MySetupState::default(),
         setup,
-        draw,
+        build,
     );
+}
+
+#[derive(Default)]
+pub struct MyState {}
+
+#[derive(Default)]
+pub struct MySetupState {
+    pub layers: MySetupStateLayers,
+    pub render_passes: MySetupStateRenderPasses,
+}
+#[derive(Default)]
+pub struct MySetupStateLayers {
+    pub basic_triangle_draw_layer: Option<BasicTriangleDrawLayer>,
+    pub image_debug_draw_layer: Option<ImageDebugDrawLayer>,
+}
+#[derive(Default)]
+pub struct MySetupStateRenderPasses {
+    pub offscreen_render_pass: MySetupStateOffscreenRenderPass,
+    pub swapchain_render_pass: MySetupStateSwapchainRenderPass,
+}
+#[derive(Default)]
+pub struct MySetupStateOffscreenRenderPass {
+    pub render_pass: Option<Arc<RenderPass>>,
+    pub framebuffer: Option<Arc<Framebuffer>>,
+    pub attachment_image: Option<Arc<AttachmentImage>>,
+    pub result_image: Option<Arc<StorageImage>>,
+}
+#[derive(Default)]
+pub struct MySetupStateSwapchainRenderPass {
+    pub render_pass: Option<Arc<RenderPass>>,
 }
 
 fn setup(setup_context: &mut SetupContext<MyState, MySetupState>) -> SetupResponse {
@@ -155,33 +197,33 @@ fn setup_swapchain_render_pass(setup_context: &mut SetupContext<MyState, MySetup
         render_pass: render_pass.clone(),
     };
 
-    let mut copy_draw_layer = CopyDrawLayer::default();
-    copy_draw_layer.setup(&mut layer_setup_context);
-    setup_context.setup_state.layers.copy_draw_layer = Some(copy_draw_layer);
+    let mut image_debug_draw_layer = ImageDebugDrawLayer::default();
+    image_debug_draw_layer.setup(&mut layer_setup_context);
+    setup_context.setup_state.layers.image_debug_draw_layer = Some(image_debug_draw_layer);
 }
 
-fn draw(draw_context: &mut DrawContext<MyState, MySetupState>) -> PrimaryAutoCommandBuffer {
+fn build(build_context: &mut BuildContext<MyState, MySetupState>) -> PrimaryAutoCommandBuffer {
     let mut command_buffer_builder = AutoCommandBufferBuilder::primary(
-        draw_context.device.clone(),
-        draw_context.queue.queue_family_index(),
+        build_context.device.clone(),
+        build_context.queue.queue_family_index(),
         CommandBufferUsage::OneTimeSubmit,
     )
     .unwrap();
 
     // Offscreen pass
-    draw_offscreen_render_pass(draw_context, &mut command_buffer_builder);
+    build_offscreen_render_pass(build_context, &mut command_buffer_builder);
 
     // Compute pass
-    compute_blit_offscreen_to_result_image(draw_context, &mut command_buffer_builder);
+    build_blit_offscreen_to_result_image(build_context, &mut command_buffer_builder);
 
     // Swapchain pass
-    draw_swapchain_render_pass(draw_context, &mut command_buffer_builder);
+    build_swapchain_render_pass(build_context, &mut command_buffer_builder);
 
     command_buffer_builder.build().unwrap()
 }
 
-fn draw_offscreen_render_pass(
-    draw_context: &mut DrawContext<MyState, MySetupState>,
+fn build_offscreen_render_pass(
+    build_context: &mut BuildContext<MyState, MySetupState>,
     command_buffer_builder: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
 ) {
     command_buffer_builder
@@ -189,7 +231,7 @@ fn draw_offscreen_render_pass(
             RenderPassBeginInfo {
                 clear_values: vec![Some([0.0, 1.0, 0.0, 1.0].into())],
                 ..RenderPassBeginInfo::framebuffer(
-                    draw_context
+                    build_context
                         .setup_state
                         .render_passes
                         .offscreen_render_pass
@@ -202,17 +244,17 @@ fn draw_offscreen_render_pass(
             SubpassContents::Inline,
         )
         .unwrap()
-        .set_viewport(0, [draw_context.viewport.clone()]);
+        .set_viewport(0, [build_context.viewport.clone()]);
 
     // Draw
-    let mut layer_draw_context = LayerDrawContext {
-        state: draw_context.state,
-        meta: draw_context.meta,
-        viewport: draw_context.viewport.clone(),
+    let mut layer_draw_context = LayerBuildContext {
+        state: build_context.state,
+        meta: build_context.meta,
+        viewport: build_context.viewport.clone(),
         command_buffer_builder,
     };
-    <BasicTriangleDrawLayer as DrawLayer<MyState, MySetupState>>::draw(
-        &mut draw_context
+    <BasicTriangleDrawLayer as DrawLayer<MyState, MySetupState>>::build(
+        &mut build_context
             .setup_state
             .layers
             .basic_triangle_draw_layer
@@ -224,11 +266,11 @@ fn draw_offscreen_render_pass(
     command_buffer_builder.end_render_pass().unwrap();
 }
 
-fn compute_blit_offscreen_to_result_image(
-    draw_context: &mut DrawContext<MyState, MySetupState>,
+fn build_blit_offscreen_to_result_image(
+    build_context: &mut BuildContext<MyState, MySetupState>,
     command_buffer_builder: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
 ) {
-    let source_image = draw_context
+    let source_image = build_context
         .setup_state
         .render_passes
         .offscreen_render_pass
@@ -236,7 +278,7 @@ fn compute_blit_offscreen_to_result_image(
         .as_ref()
         .unwrap()
         .clone();
-    let destination_image = draw_context
+    let destination_image = build_context
         .setup_state
         .render_passes
         .offscreen_render_pass
@@ -262,35 +304,197 @@ fn compute_blit_offscreen_to_result_image(
         .unwrap();
 }
 
-fn draw_swapchain_render_pass(
-    draw_context: &mut DrawContext<MyState, MySetupState>,
+fn build_swapchain_render_pass(
+    build_context: &mut BuildContext<MyState, MySetupState>,
     command_buffer_builder: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
 ) {
     command_buffer_builder
         .begin_render_pass(
             RenderPassBeginInfo {
                 clear_values: vec![Some([1.0, 1.0, 0.0, 1.0].into())],
-                ..RenderPassBeginInfo::framebuffer(draw_context.swapchain_framebuffer.clone())
+                ..RenderPassBeginInfo::framebuffer(build_context.swapchain_framebuffer.clone())
             },
             SubpassContents::Inline,
         )
         .unwrap()
-        .set_viewport(0, [draw_context.viewport.clone()]);
+        .set_viewport(0, [build_context.viewport.clone()]);
 
     // Draw
-    let mut layer_draw_context = LayerDrawContext {
-        state: draw_context.state,
-        meta: draw_context.meta,
-        viewport: draw_context.viewport.clone(),
+    let mut layer_draw_context = LayerBuildContext {
+        state: build_context.state,
+        meta: build_context.meta,
+        viewport: build_context.viewport.clone(),
         command_buffer_builder,
     };
-    draw_context
+    build_context
         .setup_state
         .layers
-        .copy_draw_layer
+        .image_debug_draw_layer
         .as_mut()
         .unwrap()
-        .draw(&mut layer_draw_context);
+        .build(&mut layer_draw_context);
 
     command_buffer_builder.end_render_pass().unwrap();
+}
+
+#[derive(Default)]
+pub struct ImageDebugDrawLayer {
+    device: Option<Arc<Device>>,
+    pipeline: Option<Arc<GraphicsPipeline>>,
+    vertex_buffer: Option<Arc<CpuAccessibleBuffer<[Vertex]>>>,
+    descriptor_set: Option<Arc<PersistentDescriptorSet>>,
+}
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Zeroable, Pod)]
+struct Vertex {
+    position: [f32; 2],
+    uv: [f32; 2],
+}
+impl_vertex!(Vertex, position, uv);
+impl DrawLayer<MyState, MySetupState> for ImageDebugDrawLayer {
+    fn setup(&mut self, setup_context: &mut LayerSetupContext<MyState, MySetupState>) {
+        let vertices = [
+            Vertex {
+                position: [-0.5, -0.5],
+                uv: [0.0, 0.0],
+            },
+            Vertex {
+                position: [-0.5, 0.5],
+                uv: [0.0, 1.0],
+            },
+            Vertex {
+                position: [0.5, 0.5],
+                uv: [1.0, 1.0],
+            },
+            Vertex {
+                position: [-0.5, -0.5],
+                uv: [0.0, 0.0],
+            },
+            Vertex {
+                position: [0.5, 0.5],
+                uv: [1.0, 1.0],
+            },
+            Vertex {
+                position: [0.5, -0.5],
+                uv: [1.0, 0.0],
+            },
+        ];
+        let vertex_buffer = CpuAccessibleBuffer::from_iter(
+            setup_context.device.clone(),
+            BufferUsage {
+                vertex_buffer: true,
+                ..BufferUsage::empty()
+            },
+            false,
+            vertices,
+        )
+        .expect("Could not create buffer from iter");
+
+        mod vs {
+            vulkano_shaders::shader! {
+                ty: "vertex",
+                src: "
+				#version 450
+
+				layout(location = 0) in vec2 position;
+                layout(location = 1) in vec2 uv; 
+
+                layout(location = 0) out vec2 v_uv;
+
+				void main() {
+					gl_Position = vec4(position, 0.0, 1.0);
+                    v_uv = uv;
+				}
+			"
+            }
+        }
+
+        mod fs {
+            vulkano_shaders::shader! {
+                ty: "fragment",
+                src: "
+				#version 450
+
+                layout(set = 0, binding = 0) uniform sampler2D tex;
+
+                layout(location = 0) in vec2 v_uv;
+
+				layout(location = 0) out vec4 f_color;
+
+				void main() {
+                    f_color = texture(tex, v_uv);
+				}
+			"
+            }
+        }
+
+        let vs = vs::load(setup_context.device.clone()).expect("Could not load vertex shader");
+        let fs = fs::load(setup_context.device.clone()).expect("Could not load fragment shader");
+
+        let pipeline = GraphicsPipeline::start()
+            .render_pass(Subpass::from(setup_context.render_pass.clone(), 0).unwrap())
+            .vertex_input_state(BuffersDefinition::new().vertex::<Vertex>())
+            .input_assembly_state(
+                InputAssemblyState::new().topology(PrimitiveTopology::TriangleList),
+            )
+            .vertex_shader(vs.entry_point("main").unwrap(), ())
+            .viewport_state(ViewportState::viewport_dynamic_scissor_irrelevant())
+            .fragment_shader(fs.entry_point("main").unwrap(), ())
+            .build(setup_context.device.clone())
+            .expect("Could not build pipeline");
+
+        let sampler = Sampler::new(
+            setup_context.device.clone(),
+            SamplerCreateInfo {
+                min_filter: Filter::Nearest,
+                mag_filter: Filter::Nearest,
+                mipmap_mode: SamplerMipmapMode::Nearest,
+                ..Default::default()
+            },
+        )
+        .expect("Could not create sampler");
+
+        let layout = pipeline
+            .layout()
+            .set_layouts()
+            .get(0)
+            .expect("Could not get layout");
+
+        let texture = ImageView::new_default(
+            setup_context
+                .setup_state
+                .render_passes
+                .offscreen_render_pass
+                .result_image
+                .as_ref()
+                .unwrap()
+                .clone(),
+        )
+        .unwrap();
+
+        let descriptor_set = PersistentDescriptorSet::new(
+            layout.clone(),
+            [WriteDescriptorSet::image_view_sampler(0, texture, sampler)],
+        )
+        .expect("Could not create descriptor set");
+
+        self.device = Some(setup_context.device.clone());
+        self.pipeline = Some(pipeline);
+        self.vertex_buffer = Some(vertex_buffer);
+        self.descriptor_set = Some(descriptor_set);
+    }
+    fn build(&mut self, draw_context: &mut LayerBuildContext<MyState>) {
+        draw_context
+            .command_buffer_builder
+            .bind_pipeline_graphics(self.pipeline.as_ref().unwrap().clone())
+            .bind_vertex_buffers(0, self.vertex_buffer.as_ref().unwrap().clone())
+            .bind_descriptor_sets(
+                PipelineBindPoint::Graphics,
+                self.pipeline.as_ref().as_mut().unwrap().layout().clone(),
+                0,
+                self.descriptor_set.as_ref().unwrap().clone(),
+            )
+            .draw(self.vertex_buffer.as_ref().unwrap().len() as u32, 1, 0, 0)
+            .unwrap();
+    }
 }

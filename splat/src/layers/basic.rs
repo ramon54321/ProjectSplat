@@ -1,4 +1,4 @@
-use crate::{DrawLayer, LayerDrawContext, LayerSetupContext};
+use crate::{DrawLayer, LayerBuildContext, LayerSetupContext};
 use bytemuck::{Pod, Zeroable};
 use std::{fmt::Debug, sync::Arc};
 use vulkano::{
@@ -98,8 +98,8 @@ impl<T, S> DrawLayer<T, S> for BasicTriangleDrawLayer {
         self.pipeline = Some(pipeline);
         self.vertex_buffer = Some(vertex_buffer);
     }
-    fn draw(&mut self, draw_context: &mut LayerDrawContext<T>) {
-        draw_context
+    fn build(&mut self, build_context: &mut LayerBuildContext<T>) {
+        build_context
             .command_buffer_builder
             .bind_pipeline_graphics(self.pipeline.as_ref().unwrap().clone())
             .bind_vertex_buffers(0, self.vertex_buffer.as_ref().unwrap().clone())

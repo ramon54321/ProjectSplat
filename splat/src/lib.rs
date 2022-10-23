@@ -1,32 +1,19 @@
 use crate::util::{
-    create_framebuffers, create_instance, create_surface, create_swapchain, get_device_extensions,
-    get_device_features, get_logical_device_and_queues, get_physical_device_and_queue_family,
+    create_framebuffers_from_swapchain, create_instance, create_surface, create_swapchain,
+    get_device_extensions, get_device_features, get_logical_device_and_queues,
+    get_physical_device_and_queue_family,
 };
 use nalgebra_glm::Vec2;
 use std::{
-    cell::RefCell,
     collections::HashSet,
-    rc::Rc,
     sync::Arc,
     time::{Duration, Instant},
 };
 use vulkano::{
-    buffer::{BufferUsage, CpuAccessibleBuffer},
-    command_buffer::{
-        AutoCommandBufferBuilder, BlitImageInfo, CommandBufferUsage, CopyBufferToImageInfo,
-        ImageBlit, PrimaryAutoCommandBuffer, PrimaryCommandBuffer, RenderPassBeginInfo,
-        SubpassContents,
-    },
+    command_buffer::{AutoCommandBufferBuilder, PrimaryAutoCommandBuffer},
     device::{Device, Queue},
-    format::Format,
-    image::{
-        view::{ImageView, ImageViewCreateInfo},
-        AttachmentImage, ImageAccess, ImageCreateFlags, ImageDimensions, ImageLayout, ImageUsage,
-        ImmutableImage, MipmapsCount, StorageImage,
-    },
     pipeline::graphics::viewport::Viewport,
-    render_pass::{Framebuffer, FramebufferCreateInfo, RenderPass},
-    sampler::Filter,
+    render_pass::{Framebuffer, RenderPass},
     swapchain::{
         acquire_next_image, AcquireError, PresentInfo, Swapchain, SwapchainCreateInfo,
         SwapchainCreationError,
@@ -44,41 +31,9 @@ mod util;
 
 pub use layers::{
     basic::BasicTriangleDrawLayer,
-    copy::CopyDrawLayer,
     text::{TextDrawLayer, TextEnqueueRequest},
 };
 pub use winit::event::VirtualKeyCode;
-
-// User speciic
-#[derive(Default)]
-pub struct MyState {}
-
-#[derive(Default)]
-pub struct MySetupState {
-    pub layers: MySetupStateLayers,
-    pub render_passes: MySetupStateRenderPasses,
-}
-#[derive(Default)]
-pub struct MySetupStateLayers {
-    pub basic_triangle_draw_layer: Option<BasicTriangleDrawLayer>,
-    pub copy_draw_layer: Option<CopyDrawLayer>,
-}
-#[derive(Default)]
-pub struct MySetupStateRenderPasses {
-    pub offscreen_render_pass: MySetupStateOffscreenRenderPass,
-    pub swapchain_render_pass: MySetupStateSwapchainRenderPass,
-}
-#[derive(Default)]
-pub struct MySetupStateOffscreenRenderPass {
-    pub render_pass: Option<Arc<RenderPass>>,
-    pub framebuffer: Option<Arc<Framebuffer>>,
-    pub attachment_image: Option<Arc<AttachmentImage>>,
-    pub result_image: Option<Arc<StorageImage>>,
-}
-#[derive(Default)]
-pub struct MySetupStateSwapchainRenderPass {
-    pub render_pass: Option<Arc<RenderPass>>,
-}
 
 pub struct LayerSetupContext<'a, T, S> {
     pub state: &'a mut T,
@@ -87,7 +42,7 @@ pub struct LayerSetupContext<'a, T, S> {
     pub queue: Arc<Queue>,
     pub render_pass: Arc<RenderPass>,
 }
-pub struct LayerDrawContext<'a, 'b, T> {
+pub struct LayerBuildContext<'a, 'b, T> {
     pub state: &'a mut T,
     pub meta: &'a mut Meta<'b>,
     pub viewport: Viewport,
@@ -106,7 +61,7 @@ pub struct SetupResponse {
     pub swapchain_render_pass: Arc<RenderPass>,
 }
 
-pub struct DrawContext<'a, 'b, T, S> {
+pub struct BuildContext<'a, 'b, T, S> {
     pub state: &'a mut T,
     pub setup_state: &'a mut S,
     pub meta: &'a mut Meta<'b>,
@@ -118,7 +73,7 @@ pub struct DrawContext<'a, 'b, T, S> {
 
 pub trait DrawLayer<T, S> {
     fn setup(&mut self, setup_context: &mut LayerSetupContext<T, S>);
-    fn draw(&mut self, draw_context: &mut LayerDrawContext<T>);
+    fn build(&mut self, build_context: &mut LayerBuildContext<T>);
 }
 
 pub enum AlignHorizontal {
@@ -171,7 +126,7 @@ pub fn render<T: 'static, S: 'static>(
     mut state: T,
     mut setup_state: S,
     setup: fn(setup_context: &mut SetupContext<T, S>) -> SetupResponse,
-    draw: fn(draw_context: &mut DrawContext<T, S>) -> PrimaryAutoCommandBuffer,
+    build: fn(draw_context: &mut BuildContext<T, S>) -> PrimaryAutoCommandBuffer,
 ) {
     let event_loop = EventLoop::new();
 
@@ -200,74 +155,6 @@ pub fn render<T: 'static, S: 'static>(
     );
     let (mut swapchain, images) = create_swapchain(device.clone(), surface.clone());
 
-    // Custom render pass
-    let pre_image = AttachmentImage::with_usage(
-        device.clone(),
-        [500, 500],
-        Format::R8G8B8A8_UNORM,
-        ImageUsage {
-            color_attachment: true,
-            transfer_src: true,
-            ..ImageUsage::empty()
-        },
-    )
-    .unwrap();
-    let pre_image_view = ImageView::new_default(pre_image.clone()).unwrap();
-    let pre_render_pass = vulkano::single_pass_renderpass!(
-        device.clone(),
-        attachments: {
-            color: {
-                load: Clear,
-                store: Store,
-                format: Format::R8G8B8A8_UNORM,
-                samples: 1,
-            }
-        },
-        pass: {
-            color: [color],
-            depth_stencil: {}
-        }
-    )
-    .expect("Could not create pre render pass");
-    let pre_framebuffer = Framebuffer::new(
-        pre_render_pass.clone(),
-        FramebufferCreateInfo {
-            attachments: vec![pre_image_view],
-            ..Default::default()
-        },
-    )
-    .unwrap();
-    let pre_destination_image = StorageImage::new(
-        device.clone(),
-        ImageDimensions::Dim2d {
-            width: 512,
-            height: 512,
-            array_layers: 1,
-        },
-        Format::R8G8B8A8_UNORM,
-        [queue.queue_family_index()],
-    )
-    .unwrap();
-
-    //let render_pass = vulkano::single_pass_renderpass!(
-    //device.clone(),
-    //attachments: {
-    //// Own name for the attachment
-    //color: {
-    //load: Clear,
-    //store: Store,
-    //format: swapchain.image_format(),
-    //samples: 1,
-    //}
-    //},
-    //pass: {
-    //// The 'color' in the array refers to our own name of attachment above
-    //color: [color],
-    //depth_stencil: {}
-    //}
-    //)
-    //.expect("Could not create render pass");
-
     let mut setup_context = SetupContext {
         device: device.clone(),
         queue: queue.clone(),
@@ -284,48 +171,18 @@ pub fn render<T: 'static, S: 'static>(
         depth_range: 0.0..1.0,
     };
 
-    // There are multiple framebuffers
-    let mut framebuffers = create_framebuffers(
+    // Swapchain contains multiple framebuffers
+    let mut framebuffers = create_framebuffers_from_swapchain(
         &images,
         setup_response.swapchain_render_pass.clone(),
         &mut viewport,
     );
-
-    // Set up render layers
-    //{
-    //let mut setup_info = SetupInfo {
-    //state: &mut state,
-    //device: device.clone(),
-    //queue: queue.clone(),
-    //render_pass: pre_render_pass.clone(),
-    //pre_destination_image: pre_destination_image.clone(),
-    //};
-    //for pre_layer in pre_layers.iter_mut() {
-    //pre_layer.borrow_mut().setup(&mut setup_info);
-    //}
-    //}
-    //{
-    //let mut setup_info = SetupInfo {
-    //state: &mut state,
-    //device: device.clone(),
-    //queue: queue.clone(),
-    //render_pass: render_pass.clone(),
-    //pre_destination_image: pre_destination_image.clone(),
-    //};
-    //for layer in layers.iter_mut() {
-    //layer.borrow_mut().setup(&mut setup_info);
-    //}
-    //}
-
-    // Settings
-    let clear_color = splat_create_info.clear_color;
 
     // Loop
     let mut is_swapchain_invalid = false;
     let mut previous_frame_end = Some(sync::now(device.clone()).boxed());
 
     // Framerate management
-    //let mut layer_durations = Vec::new();
     let mut frame_timer = Instant::now();
     let mut frame_second_timer = Instant::now();
     let mut frame_counter = 0;
@@ -431,7 +288,7 @@ pub fn render<T: 'static, S: 'static>(
                         };
 
                     swapchain = new_swapchain;
-                    framebuffers = create_framebuffers(
+                    framebuffers = create_framebuffers_from_swapchain(
                         &new_images,
                         setup_response.swapchain_render_pass.clone(),
                         &mut viewport,
@@ -453,10 +310,6 @@ pub fn render<T: 'static, S: 'static>(
                     is_swapchain_invalid = true;
                 }
 
-                //
-                // START: Command Buffer Building
-                //
-
                 let mut meta = Meta {
                     frames_per_second,
                     was_swapchain_rebuilt,
@@ -468,12 +321,7 @@ pub fn render<T: 'static, S: 'static>(
                     keys_down: &keys_down,
                     keys_up: &keys_up,
                 };
-                //let mut gpu_interface = GpuInterface {
-                //command_buffer_builder: &mut command_buffer_builder,
-                //viewport: viewport.clone(),
-                //};
-                let mut draw_context = DrawContext {
-                    //gpu_interface: &mut gpu_interface,
+                let mut draw_context = BuildContext {
                     state: &mut state,
                     setup_state: &mut setup_state,
                     meta: &mut meta,
@@ -483,132 +331,7 @@ pub fn render<T: 'static, S: 'static>(
                     swapchain_framebuffer: framebuffers[framebuffer_image_index as usize].clone(),
                 };
 
-                let command_buffer = draw(&mut draw_context);
-
-                //let mut command_buffer_builder = AutoCommandBufferBuilder::primary(
-                //device.clone(),
-                //queue.queue_family_index(),
-                //CommandBufferUsage::OneTimeSubmit,
-                //)
-                //.expect("Could not create command buffer");
-
-                //// Pre Renderpass
-                //{
-                //command_buffer_builder
-                //.begin_render_pass(
-                //RenderPassBeginInfo {
-                //clear_values: vec![Some([0.0, 0.0, 1.0, 1.0].into())],
-                //..RenderPassBeginInfo::framebuffer(pre_framebuffer.clone())
-                //},
-                //SubpassContents::Inline,
-                //)
-                //.unwrap()
-                //.set_viewport(0, [viewport.clone()]);
-
-                //// Setup draw info
-                //let mut meta = Meta {
-                //frames_per_second,
-                //was_swapchain_rebuilt,
-                //layer_durations: layer_durations.clone(),
-                //delta_time,
-                //mouse_position,
-                //is_mouse_down,
-                //is_mouse_released,
-                //keys_hold: &keys_hold,
-                //keys_down: &keys_down,
-                //keys_up: &keys_up,
-                //};
-                //let mut gpu_interface = GpuInterface {
-                //command_buffer_builder: &mut command_buffer_builder,
-                //viewport: viewport.clone(),
-                //};
-                //let mut draw_info = DrawInfo {
-                //gpu_interface: &mut gpu_interface,
-                //meta: &mut meta,
-                //state: &mut state,
-                //};
-
-                //for pre_layer in pre_layers.iter_mut() {
-                //pre_layer.borrow_mut().draw(&mut draw_info);
-                //}
-
-                //command_buffer_builder.end_render_pass().unwrap();
-                //}
-                // END Pre Renderpass
-
-                //command_buffer_builder
-                //.blit_image(BlitImageInfo {
-                //// Same for blitting.
-                //src_image_layout: ImageLayout::General,
-                //dst_image_layout: ImageLayout::General,
-                //regions: [ImageBlit {
-                //src_subresource: pre_image.subresource_layers(),
-                //src_offsets: [[0, 0, 0], [500, 500, 1]],
-                //dst_subresource: pre_destination_image.subresource_layers(),
-                //dst_offsets: [[0, 0, 0], [250, 250, 1]],
-                //..Default::default()
-                //}]
-                //.into(),
-                //filter: Filter::Nearest,
-                //..BlitImageInfo::images(pre_image.clone(), pre_destination_image.clone())
-                //})
-                //.unwrap();
-
-                //command_buffer_builder
-                //.begin_render_pass(
-                //RenderPassBeginInfo {
-                //// Clear value for 'color' attachment
-                //clear_values: vec![Some(clear_color.into())],
-                //..RenderPassBeginInfo::framebuffer(
-                //framebuffers[framebuffer_image_index as usize].clone(),
-                //)
-                //},
-                //SubpassContents::Inline,
-                //)
-                //.unwrap()
-                //.set_viewport(0, [viewport.clone()]);
-
-                //// Setup draw info
-                //let mut meta = Meta {
-                //frames_per_second,
-                //was_swapchain_rebuilt,
-                //layer_durations: layer_durations.clone(),
-                //delta_time,
-                //mouse_position,
-                //is_mouse_down,
-                //is_mouse_released,
-                //keys_hold: &keys_hold,
-                //keys_down: &keys_down,
-                //keys_up: &keys_up,
-                //};
-                //let mut gpu_interface = GpuInterface {
-                //command_buffer_builder: &mut command_buffer_builder,
-                //viewport: viewport.clone(),
-                //};
-                //let mut draw_info = DrawInfo {
-                //gpu_interface: &mut gpu_interface,
-                //meta: &mut meta,
-                //state: &mut state,
-                //};
-
-                //// Draw each layer
-                //layer_durations.clear();
-                //for layer in layers.iter_mut() {
-                //let timer = Instant::now();
-
-                //layer.borrow_mut().draw(&mut draw_info);
-
-                //let duration = Instant::now() - timer;
-                //layer_durations.push(duration);
-                //}
-
-                //command_buffer_builder.end_render_pass().unwrap();
-
-                //
-                // END: Command Buffer Building
-                //
-
-                //let command_buffer = command_buffer_builder.build().unwrap();
+                let command_buffer = build(&mut draw_context);
 
                 let future = previous_frame_end
                     .take()

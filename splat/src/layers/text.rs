@@ -1,4 +1,4 @@
-use crate::{AlignHorizontal, AlignVertical, DrawLayer, LayerDrawContext, LayerSetupContext};
+use crate::{AlignHorizontal, AlignVertical, DrawLayer, LayerBuildContext, LayerSetupContext};
 use bytemuck::{Pod, Zeroable};
 use rusttype::{gpu_cache::Cache, point, Font, PositionedGlyph, Rect, Scale};
 use std::{collections::HashMap, fmt::Debug, rc::Rc, sync::Arc};
@@ -188,18 +188,18 @@ impl<T, S> DrawLayer<T, S> for TextDrawLayer {
         self.cache = Some(cache);
         self.descriptor_set = Some(set);
     }
-    fn draw(&mut self, draw_context: &mut LayerDrawContext<T>) {
-        let screen_width = draw_context.viewport.dimensions[0];
-        let screen_height = draw_context.viewport.dimensions[1];
+    fn build(&mut self, build_context: &mut LayerBuildContext<T>) {
+        let screen_width = build_context.viewport.dimensions[0];
+        let screen_height = build_context.viewport.dimensions[1];
 
         // Check if caches need to be rebuilt
-        if draw_context.meta.was_swapchain_rebuilt {
+        if build_context.meta.was_swapchain_rebuilt {
             self.text_glyph_cache.clear();
             self.text_vertices_cache.clear();
         }
 
         // Prepare command buffer for text draw calls
-        draw_context
+        build_context
             .command_buffer_builder
             .bind_pipeline_graphics(self.pipeline.as_ref().unwrap().clone())
             .bind_descriptor_sets(
@@ -229,7 +229,7 @@ impl<T, S> DrawLayer<T, S> for TextDrawLayer {
         );
 
         submit_vertices_draw(
-            draw_context,
+            build_context,
             self.device.as_ref().unwrap().clone(),
             vertices,
         );
@@ -473,7 +473,7 @@ fn build_vertices_from_text_datas(
 
 #[inline]
 fn submit_vertices_draw<T>(
-    draw_context: &mut LayerDrawContext<T>,
+    build_context: &mut LayerBuildContext<T>,
     device: Arc<Device>,
     vertices: Vec<Vertex>,
 ) {
@@ -488,7 +488,7 @@ fn submit_vertices_draw<T>(
             vertices,
         )
         .expect("Could not create buffer from iter");
-        draw_context
+        build_context
             .command_buffer_builder
             .bind_vertex_buffers(0, vertex_buffer.clone())
             .draw(vertex_buffer.len() as u32, 1, 0, 0)
@@ -497,7 +497,10 @@ fn submit_vertices_draw<T>(
 }
 
 #[allow(dead_code)]
-fn submit_debug_cache_texture_draw<T>(draw_context: &mut LayerDrawContext<T>, device: Arc<Device>) {
+fn submit_debug_cache_texture_draw<T>(
+    build_context: &mut LayerBuildContext<T>,
+    device: Arc<Device>,
+) {
     let mut vertices = Vec::new();
     vertices.push(Vertex {
         position: [0.0, 1.0],
@@ -539,7 +542,7 @@ fn submit_debug_cache_texture_draw<T>(draw_context: &mut LayerDrawContext<T>, de
         vertices,
     )
     .expect("Could not create buffer from iter");
-    draw_context
+    build_context
         .command_buffer_builder
         .bind_vertex_buffers(0, vertex_buffer.clone())
         .draw(vertex_buffer.len() as u32, 1, 0, 0)
