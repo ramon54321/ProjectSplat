@@ -1,4 +1,4 @@
-use crate::{DrawLayer, LayerDrawContext, LayerSetupContext, MyState};
+use crate::{DrawLayer, LayerDrawContext, LayerSetupContext, MySetupState, MyState};
 use bytemuck::{Pod, Zeroable};
 use std::{fmt::Debug, sync::Arc};
 use vulkano::{
@@ -39,8 +39,8 @@ struct Vertex {
     uv: [f32; 2],
 }
 impl_vertex!(Vertex, position, uv);
-impl DrawLayer<MyState> for CopyDrawLayer {
-    fn setup(&mut self, setup_context: &mut LayerSetupContext<MyState>) {
+impl DrawLayer<MyState, MySetupState> for CopyDrawLayer {
+    fn setup(&mut self, setup_context: &mut LayerSetupContext<MyState, MySetupState>) {
         let vertices = [
             Vertex {
                 position: [-0.5, -0.5],
@@ -150,8 +150,10 @@ impl DrawLayer<MyState> for CopyDrawLayer {
 
         let texture = ImageView::new_default(
             setup_context
-                .state
-                .other_pass_result_image
+                .setup_state
+                .render_passes
+                .offscreen_render_pass
+                .result_image
                 .as_ref()
                 .unwrap()
                 .clone(),

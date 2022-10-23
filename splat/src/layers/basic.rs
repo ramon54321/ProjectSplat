@@ -26,8 +26,8 @@ struct Vertex {
     position: [f32; 2],
 }
 impl_vertex!(Vertex, position);
-impl<T> DrawLayer<T> for BasicTriangleDrawLayer {
-    fn setup(&mut self, setup_context: &mut LayerSetupContext<T>) {
+impl<T, S> DrawLayer<T, S> for BasicTriangleDrawLayer {
+    fn setup(&mut self, setup_context: &mut LayerSetupContext<T, S>) {
         let vertices = [
             Vertex {
                 position: [-0.5, -0.25],

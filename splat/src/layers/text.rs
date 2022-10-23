@@ -76,8 +76,8 @@ impl TextDrawLayer {
         self.requests.push(request);
     }
 }
-impl<T> DrawLayer<T> for TextDrawLayer {
-    fn setup(&mut self, setup_context: &mut LayerSetupContext<T>) {
+impl<T, S> DrawLayer<T, S> for TextDrawLayer {
+    fn setup(&mut self, setup_context: &mut LayerSetupContext<T, S>) {
         let font_data = include_bytes!("DejaVuSans.ttf");
         let font = Font::from_bytes(font_data as &[u8]).unwrap();
         let (cache, cache_pixels) = create_glyph_cache_and_pixels(font.clone());

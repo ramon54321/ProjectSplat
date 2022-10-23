@@ -28,13 +28,15 @@ use vulkano::{
     render_pass::{Framebuffer, FramebufferCreateInfo, RenderPass},
     sampler::Filter,
     swapchain::{
-        acquire_next_image, AcquireError, PresentInfo, SwapchainCreateInfo, SwapchainCreationError,
+        acquire_next_image, AcquireError, PresentInfo, Swapchain, SwapchainCreateInfo,
+        SwapchainCreationError,
     },
     sync::{self, FlushError, GpuFuture},
 };
 use winit::{
     event::{ElementState, Event, MouseButton, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
+    window::Window,
 };
 
 mod layers;
@@ -47,17 +49,44 @@ pub use layers::{
 };
 pub use winit::event::VirtualKeyCode;
 
-pub struct MyState {
-    pub other_pass_result_image: Option<Arc<StorageImage>>,
+// User speciic
+#[derive(Default)]
+pub struct MyState {}
+
+#[derive(Default)]
+pub struct MySetupState {
+    pub layers: MySetupStateLayers,
+    pub render_passes: MySetupStateRenderPasses,
+}
+#[derive(Default)]
+pub struct MySetupStateLayers {
+    pub basic_triangle_draw_layer: Option<BasicTriangleDrawLayer>,
+    pub copy_draw_layer: Option<CopyDrawLayer>,
+}
+#[derive(Default)]
+pub struct MySetupStateRenderPasses {
+    pub offscreen_render_pass: MySetupStateOffscreenRenderPass,
+    pub swapchain_render_pass: MySetupStateSwapchainRenderPass,
+}
+#[derive(Default)]
+pub struct MySetupStateOffscreenRenderPass {
+    pub render_pass: Option<Arc<RenderPass>>,
+    pub framebuffer: Option<Arc<Framebuffer>>,
+    pub attachment_image: Option<Arc<AttachmentImage>>,
+    pub result_image: Option<Arc<StorageImage>>,
+}
+#[derive(Default)]
+pub struct MySetupStateSwapchainRenderPass {
+    pub render_pass: Option<Arc<RenderPass>>,
 }
 
-pub struct LayerSetupContext<'a, T> {
+pub struct LayerSetupContext<'a, T, S> {
     pub state: &'a mut T,
+    pub setup_state: &'a mut S,
     pub device: Arc<Device>,
     pub queue: Arc<Queue>,
     pub render_pass: Arc<RenderPass>,
 }
-
 pub struct LayerDrawContext<'a, 'b, T> {
     pub state: &'a mut T,
     pub meta: &'a mut Meta<'b>,
@@ -65,22 +94,30 @@ pub struct LayerDrawContext<'a, 'b, T> {
     pub command_buffer_builder: &'a mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
 }
 
-pub struct SetupContext<'a, T> {
+pub struct SetupContext<'a, T, S> {
     pub state: &'a mut T,
+    pub setup_state: &'a mut S,
     pub device: Arc<Device>,
     pub queue: Arc<Queue>,
+    pub swapchain: Arc<Swapchain<Window>>,
 }
 
-pub struct DrawContext<'a, 'b, T> {
+pub struct SetupResponse {
+    pub swapchain_render_pass: Arc<RenderPass>,
+}
+
+pub struct DrawContext<'a, 'b, T, S> {
     pub state: &'a mut T,
+    pub setup_state: &'a mut S,
     pub meta: &'a mut Meta<'b>,
     pub viewport: Viewport,
     pub device: Arc<Device>,
     pub queue: Arc<Queue>,
+    pub swapchain_framebuffer: Arc<Framebuffer>,
 }
 
-pub trait DrawLayer<T> {
-    fn setup(&mut self, setup_context: &mut LayerSetupContext<T>);
+pub trait DrawLayer<T, S> {
+    fn setup(&mut self, setup_context: &mut LayerSetupContext<T, S>);
     fn draw(&mut self, draw_context: &mut LayerDrawContext<T>);
 }
 
@@ -107,11 +144,6 @@ pub struct Meta<'a> {
     pub keys_down: &'a HashSet<VirtualKeyCode>,
 }
 
-//pub struct GpuInterface<'a> {
-//pub command_buffer_builder: &'a mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
-//pub viewport: Viewport,
-//}
-
 #[derive(Debug, Clone)]
 pub struct SplatCreateInfo {
     pub title: String,
@@ -134,11 +166,12 @@ impl Default for SplatCreateInfo {
     }
 }
 
-pub fn render<T: 'static>(
+pub fn render<T: 'static, S: 'static>(
     splat_create_info: SplatCreateInfo,
     mut state: T,
-    setup: fn(setup_context: &mut SetupContext<T>),
-    draw: fn(draw_context: &mut DrawContext<T>) -> PrimaryAutoCommandBuffer,
+    mut setup_state: S,
+    setup: fn(setup_context: &mut SetupContext<T, S>) -> SetupResponse,
+    draw: fn(draw_context: &mut DrawContext<T, S>) -> PrimaryAutoCommandBuffer,
 ) {
     let event_loop = EventLoop::new();
 
@@ -216,24 +249,33 @@ pub fn render<T: 'static>(
     )
     .unwrap();
 
-    let render_pass = vulkano::single_pass_renderpass!(
-        device.clone(),
-        attachments: {
-            // Own name for the attachment
-            color: {
-                load: Clear,
-                store: Store,
-                format: swapchain.image_format(),
-                samples: 1,
-            }
-        },
-        pass: {
-            // The 'color' in the array refers to our own name of attachment above
-            color: [color],
-            depth_stencil: {}
-        }
-    )
-    .expect("Could not create render pass");
+    //let render_pass = vulkano::single_pass_renderpass!(
+    //device.clone(),
+    //attachments: {
+    //// Own name for the attachment
+    //color: {
+    //load: Clear,
+    //store: Store,
+    //format: swapchain.image_format(),
+    //samples: 1,
+    //}
+    //},
+    //pass: {
+    //// The 'color' in the array refers to our own name of attachment above
+    //color: [color],
+    //depth_stencil: {}
+    //}
+    //)
+    //.expect("Could not create render pass");
+
+    let mut setup_context = SetupContext {
+        device: device.clone(),
+        queue: queue.clone(),
+        swapchain: swapchain.clone(),
+        state: &mut state,
+        setup_state: &mut setup_state,
+    };
+    let setup_response = setup(&mut setup_context);
 
     // Unique per draw call type
     let mut viewport = Viewport {
@@ -243,7 +285,11 @@ pub fn render<T: 'static>(
     };
 
     // There are multiple framebuffers
-    let mut framebuffers = create_framebuffers(&images, render_pass.clone(), &mut viewport);
+    let mut framebuffers = create_framebuffers(
+        &images,
+        setup_response.swapchain_render_pass.clone(),
+        &mut viewport,
+    );
 
     // Set up render layers
     //{
@@ -270,13 +316,6 @@ pub fn render<T: 'static>(
     //layer.borrow_mut().setup(&mut setup_info);
     //}
     //}
-
-    let mut setup_context = SetupContext {
-        device: device.clone(),
-        queue: queue.clone(),
-        state: &mut state,
-    };
-    setup(&mut setup_context);
 
     // Settings
     let clear_color = splat_create_info.clear_color;
@@ -392,8 +431,11 @@ pub fn render<T: 'static>(
                         };
 
                     swapchain = new_swapchain;
-                    framebuffers =
-                        create_framebuffers(&new_images, render_pass.clone(), &mut viewport);
+                    framebuffers = create_framebuffers(
+                        &new_images,
+                        setup_response.swapchain_render_pass.clone(),
+                        &mut viewport,
+                    );
                     is_swapchain_invalid = false;
                 }
 
@@ -433,10 +475,12 @@ pub fn render<T: 'static>(
                 let mut draw_context = DrawContext {
                     //gpu_interface: &mut gpu_interface,
                     state: &mut state,
+                    setup_state: &mut setup_state,
                     meta: &mut meta,
                     viewport: viewport.clone(),
                     device: device.clone(),
                     queue: queue.clone(),
+                    swapchain_framebuffer: framebuffers[framebuffer_image_index as usize].clone(),
                 };
 
                 let command_buffer = draw(&mut draw_context);
