@@ -10,16 +10,13 @@ use std::{
     time::{Duration, Instant},
 };
 use vulkano::{
-    command_buffer::{
-        AutoCommandBufferBuilder, CommandBufferExecFuture,
-        PrimaryAutoCommandBuffer,
-    },
+    command_buffer::{AutoCommandBufferBuilder, CommandBufferExecFuture, PrimaryAutoCommandBuffer},
     device::{Device, Queue},
     pipeline::graphics::viewport::Viewport,
     render_pass::{Framebuffer, RenderPass},
     swapchain::{
-        acquire_next_image, AcquireError, PresentFuture, Swapchain,
-        SwapchainAcquireFuture, SwapchainCreateInfo, SwapchainCreationError,
+        acquire_next_image, AcquireError, PresentFuture, Swapchain, SwapchainAcquireFuture,
+        SwapchainCreateInfo, SwapchainCreationError,
     },
     sync::{self, FenceSignalFuture, FlushError, GpuFuture, JoinFuture},
 };
@@ -130,18 +127,20 @@ impl Default for SplatCreateInfo {
     }
 }
 
-pub type BuildResponse = Result<
-    FenceSignalFuture<
-        PresentFuture<
-            CommandBufferExecFuture<
-                JoinFuture<Box<dyn GpuFuture>, SwapchainAcquireFuture<Window>>,
-                PrimaryAutoCommandBuffer,
-            >,
-            Window,
-        >,
-    >,
-    FlushError,
->;
+//pub type BuildResponse = Result<
+//FenceSignalFuture<
+//PresentFuture<
+//CommandBufferExecFuture<
+//JoinFuture<Box<dyn GpuFuture>, SwapchainAcquireFuture<Window>>,
+//PrimaryAutoCommandBuffer,
+//>,
+//Window,
+//>,
+//>,
+//FlushError,
+//>;
+
+pub type BuildResponse = Option<Box<dyn GpuFuture>>;
 
 pub fn render<T: 'static, S: 'static>(
     splat_create_info: SplatCreateInfo,
@@ -363,16 +362,8 @@ pub fn render<T: 'static, S: 'static>(
                 let last_future = build(&mut draw_context);
 
                 match last_future {
-                    Ok(future) => {
-                        previous_frame_end_future = Some(future.boxed());
-                    }
-                    Err(FlushError::OutOfDate) => {
-                        is_swapchain_invalid = true;
-                        previous_frame_end_future = Some(sync::now(device.clone()).boxed());
-                    }
-                    Err(error) => {
-                        panic!("Failed to flush future: {:?}", error);
-                    }
+                    Some(future) => previous_frame_end_future = Some(future.boxed()),
+                    None => panic!("Last future error"),
                 }
 
                 // Reset Meta

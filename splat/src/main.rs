@@ -29,7 +29,7 @@ use vulkano::{
     render_pass::{Framebuffer, FramebufferCreateInfo, RenderPass, Subpass},
     sampler::{Filter, Sampler, SamplerCreateInfo, SamplerMipmapMode},
     swapchain::PresentInfo,
-    sync::{GpuFuture},
+    sync::GpuFuture,
 };
 
 fn main() {
@@ -239,7 +239,7 @@ fn build(build_context: &mut BuildContext<MyState, MySetupState>) -> BuildRespon
         )
         .then_signal_fence_and_flush();
 
-    future
+    Some(Box::new(future.unwrap()))
 }
 
 fn build_offscreen_render_pass(
