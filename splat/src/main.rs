@@ -1,7 +1,7 @@
 use bytemuck::{Pod, Zeroable};
 use splat::{
-    render, BasicTriangleDrawLayer, BuildContext, DrawLayer, LayerBuildContext, LayerSetupContext,
-    SetupContext, SetupResponse, SplatCreateInfo,
+    render, BasicTriangleDrawLayer, BuildContext, BuildResponse, DrawLayer, LayerBuildContext,
+    LayerSetupContext, SetupContext, SetupResponse, SplatCreateInfo,
 };
 use std::sync::Arc;
 use vulkano::{
@@ -28,6 +28,8 @@ use vulkano::{
     },
     render_pass::{Framebuffer, FramebufferCreateInfo, RenderPass, Subpass},
     sampler::{Filter, Sampler, SamplerCreateInfo, SamplerMipmapMode},
+    swapchain::PresentInfo,
+    sync::{GpuFuture},
 };
 
 fn main() {
@@ -202,7 +204,7 @@ fn setup_swapchain_render_pass(setup_context: &mut SetupContext<MyState, MySetup
     setup_context.setup_state.layers.image_debug_draw_layer = Some(image_debug_draw_layer);
 }
 
-fn build(build_context: &mut BuildContext<MyState, MySetupState>) -> PrimaryAutoCommandBuffer {
+fn build(build_context: &mut BuildContext<MyState, MySetupState>) -> BuildResponse {
     let mut command_buffer_builder = AutoCommandBufferBuilder::primary(
         build_context.device.clone(),
         build_context.queue.queue_family_index(),
@@ -219,7 +221,25 @@ fn build(build_context: &mut BuildContext<MyState, MySetupState>) -> PrimaryAuto
     // Swapchain pass
     build_swapchain_render_pass(build_context, &mut command_buffer_builder);
 
-    command_buffer_builder.build().unwrap()
+    let command_buffer = command_buffer_builder.build().unwrap();
+
+    let future = build_context
+        .previous_frame_end_future
+        .take()
+        .unwrap()
+        .join(build_context.acquire_future.take().unwrap())
+        .then_execute(build_context.queue.clone(), command_buffer)
+        .unwrap()
+        .then_swapchain_present(
+            build_context.queue.clone(),
+            PresentInfo {
+                index: build_context.swapchain_framebuffer_image_index,
+                ..PresentInfo::swapchain(build_context.swapchain.clone())
+            },
+        )
+        .then_signal_fence_and_flush();
+
+    future
 }
 
 fn build_offscreen_render_pass(

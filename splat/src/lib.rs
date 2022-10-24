@@ -10,15 +10,18 @@ use std::{
     time::{Duration, Instant},
 };
 use vulkano::{
-    command_buffer::{AutoCommandBufferBuilder, PrimaryAutoCommandBuffer},
+    command_buffer::{
+        AutoCommandBufferBuilder, CommandBufferExecFuture,
+        PrimaryAutoCommandBuffer,
+    },
     device::{Device, Queue},
     pipeline::graphics::viewport::Viewport,
     render_pass::{Framebuffer, RenderPass},
     swapchain::{
-        acquire_next_image, AcquireError, PresentInfo, Swapchain, SwapchainCreateInfo,
-        SwapchainCreationError,
+        acquire_next_image, AcquireError, PresentFuture, Swapchain,
+        SwapchainAcquireFuture, SwapchainCreateInfo, SwapchainCreationError,
     },
-    sync::{self, FlushError, GpuFuture},
+    sync::{self, FenceSignalFuture, FlushError, GpuFuture, JoinFuture},
 };
 use winit::{
     event::{ElementState, Event, MouseButton, WindowEvent},
@@ -64,13 +67,17 @@ pub struct SetupResponse {
 }
 
 pub struct BuildContext<'a, 'b, T, S> {
+    pub previous_frame_end_future: &'a mut Option<Box<dyn GpuFuture>>,
+    pub acquire_future: Option<SwapchainAcquireFuture<Window>>,
     pub state: &'a mut T,
     pub setup_state: &'a mut S,
     pub meta: &'a mut Meta<'b>,
     pub viewport: Viewport,
     pub device: Arc<Device>,
     pub queue: Arc<Queue>,
+    pub swapchain: Arc<Swapchain<Window>>,
     pub swapchain_framebuffer: Arc<Framebuffer>,
+    pub swapchain_framebuffer_image_index: usize,
 }
 
 pub trait DrawLayer<T, S> {
@@ -123,12 +130,25 @@ impl Default for SplatCreateInfo {
     }
 }
 
+pub type BuildResponse = Result<
+    FenceSignalFuture<
+        PresentFuture<
+            CommandBufferExecFuture<
+                JoinFuture<Box<dyn GpuFuture>, SwapchainAcquireFuture<Window>>,
+                PrimaryAutoCommandBuffer,
+            >,
+            Window,
+        >,
+    >,
+    FlushError,
+>;
+
 pub fn render<T: 'static, S: 'static>(
     splat_create_info: SplatCreateInfo,
     mut state: T,
     mut setup_state: S,
     setup: fn(setup_context: &mut SetupContext<T, S>) -> SetupResponse,
-    build: fn(draw_context: &mut BuildContext<T, S>) -> PrimaryAutoCommandBuffer,
+    build: fn(draw_context: &mut BuildContext<T, S>) -> BuildResponse,
 ) {
     let event_loop = EventLoop::new();
 
@@ -182,7 +202,7 @@ pub fn render<T: 'static, S: 'static>(
 
     // Loop
     let mut is_swapchain_invalid = false;
-    let mut previous_frame_end = Some(sync::now(device.clone()).boxed());
+    let mut previous_frame_end_future = Some(sync::now(device.clone()).boxed());
 
     // Framerate management
     let mut frame_timer = Instant::now();
@@ -274,7 +294,10 @@ pub fn render<T: 'static, S: 'static>(
                 }
 
                 // Periodic cleanup
-                previous_frame_end.as_mut().unwrap().cleanup_finished();
+                previous_frame_end_future
+                    .as_mut()
+                    .unwrap()
+                    .cleanup_finished();
 
                 let mut was_swapchain_rebuilt = false;
                 if is_swapchain_invalid {
@@ -324,39 +347,28 @@ pub fn render<T: 'static, S: 'static>(
                     keys_up: &keys_up,
                 };
                 let mut draw_context = BuildContext {
+                    previous_frame_end_future: &mut previous_frame_end_future,
+                    acquire_future: Some(acquire_future),
                     state: &mut state,
                     setup_state: &mut setup_state,
                     meta: &mut meta,
                     viewport: viewport.clone(),
                     device: device.clone(),
                     queue: queue.clone(),
+                    swapchain: swapchain.clone(),
                     swapchain_framebuffer: framebuffers[framebuffer_image_index as usize].clone(),
+                    swapchain_framebuffer_image_index: framebuffer_image_index,
                 };
 
-                let command_buffer = build(&mut draw_context);
+                let last_future = build(&mut draw_context);
 
-                let future = previous_frame_end
-                    .take()
-                    .unwrap()
-                    .join(acquire_future)
-                    .then_execute(queue.clone(), command_buffer)
-                    .unwrap()
-                    .then_swapchain_present(
-                        queue.clone(),
-                        PresentInfo {
-                            index: framebuffer_image_index,
-                            ..PresentInfo::swapchain(swapchain.clone())
-                        },
-                    )
-                    .then_signal_fence_and_flush();
-
-                match future {
+                match last_future {
                     Ok(future) => {
-                        previous_frame_end = Some(future.boxed());
+                        previous_frame_end_future = Some(future.boxed());
                     }
                     Err(FlushError::OutOfDate) => {
                         is_swapchain_invalid = true;
-                        previous_frame_end = Some(sync::now(device.clone()).boxed());
+                        previous_frame_end_future = Some(sync::now(device.clone()).boxed());
                     }
                     Err(error) => {
                         panic!("Failed to flush future: {:?}", error);
