@@ -1,6 +1,6 @@
 use bytemuck::{Pod, Zeroable};
 use splat::{
-    render, BasicTriangleDrawLayer, BuildContext, BuildResponse, DrawLayer, LayerBuildContext,
+    render, BuildContext, BuildResponse, LayerBuildBasicTriangle, LayerBuildContext,
     LayerSetupContext, SetupContext, SetupResponse, SplatCreateInfo,
 };
 use std::sync::Arc;
@@ -35,7 +35,9 @@ use vulkano::{
 fn main() {
     render(
         SplatCreateInfo::default(),
-        MyState {},
+        MyState {
+            render_passes: MyStateRenderPasses::default(),
+        },
         MySetupState::default(),
         setup,
         build,
@@ -43,32 +45,33 @@ fn main() {
 }
 
 #[derive(Default)]
-pub struct MyState {}
+pub struct MyState {
+    pub render_passes: MyStateRenderPasses,
+}
 
 #[derive(Default)]
 pub struct MySetupState {
     pub layers: MySetupStateLayers,
-    pub render_passes: MySetupStateRenderPasses,
 }
 #[derive(Default)]
 pub struct MySetupStateLayers {
-    pub basic_triangle_draw_layer: Option<BasicTriangleDrawLayer>,
+    pub basic_triangle_draw_layer: Option<LayerBuildBasicTriangle>,
     pub image_debug_draw_layer: Option<ImageDebugDrawLayer>,
 }
 #[derive(Default)]
-pub struct MySetupStateRenderPasses {
-    pub offscreen_render_pass: MySetupStateOffscreenRenderPass,
-    pub swapchain_render_pass: MySetupStateSwapchainRenderPass,
+pub struct MyStateRenderPasses {
+    pub offscreen_render_pass: MyStateOffscreenRenderPass,
+    pub swapchain_render_pass: MyStateSwapchainRenderPass,
 }
 #[derive(Default)]
-pub struct MySetupStateOffscreenRenderPass {
+pub struct MyStateOffscreenRenderPass {
     pub render_pass: Option<Arc<RenderPass>>,
     pub framebuffer: Option<Arc<Framebuffer>>,
     pub attachment_image: Option<Arc<AttachmentImage>>,
     pub result_image: Option<Arc<StorageImage>>,
 }
 #[derive(Default)]
-pub struct MySetupStateSwapchainRenderPass {
+pub struct MyStateSwapchainRenderPass {
     pub render_pass: Option<Arc<RenderPass>>,
 }
 
@@ -78,7 +81,7 @@ fn setup(setup_context: &mut SetupContext<MyState, MySetupState>) -> SetupRespon
 
     SetupResponse {
         swapchain_render_pass: setup_context
-            .setup_state
+            .state
             .render_passes
             .swapchain_render_pass
             .render_pass
@@ -140,10 +143,7 @@ fn setup_offscreen_render_pass(setup_context: &mut SetupContext<MyState, MySetup
     .unwrap();
 
     // Setup setup state
-    let offscreen_render_pass = &mut setup_context
-        .setup_state
-        .render_passes
-        .offscreen_render_pass;
+    let offscreen_render_pass = &mut setup_context.state.render_passes.offscreen_render_pass;
     offscreen_render_pass.render_pass = Some(render_pass.clone());
     offscreen_render_pass.framebuffer = Some(framebuffer.clone());
     offscreen_render_pass.attachment_image = Some(attachment_image.clone());
@@ -158,7 +158,7 @@ fn setup_offscreen_render_pass(setup_context: &mut SetupContext<MyState, MySetup
         render_pass: render_pass.clone(),
     };
 
-    let mut basic_triangle_draw_layer = BasicTriangleDrawLayer::default();
+    let mut basic_triangle_draw_layer = LayerBuildBasicTriangle::default();
     basic_triangle_draw_layer.setup(&mut layer_setup_context);
     setup_context.setup_state.layers.basic_triangle_draw_layer = Some(basic_triangle_draw_layer);
 }
@@ -184,10 +184,7 @@ fn setup_swapchain_render_pass(setup_context: &mut SetupContext<MyState, MySetup
     .expect("Could not create render pass");
 
     // Setup setup state
-    let swapchain_render_pass = &mut setup_context
-        .setup_state
-        .render_passes
-        .swapchain_render_pass;
+    let swapchain_render_pass = &mut setup_context.state.render_passes.swapchain_render_pass;
     swapchain_render_pass.render_pass = Some(render_pass.clone());
 
     // Setup draw layers
@@ -252,7 +249,7 @@ fn build_offscreen_render_pass(
                 clear_values: vec![Some([0.0, 1.0, 0.0, 1.0].into())],
                 ..RenderPassBeginInfo::framebuffer(
                     build_context
-                        .setup_state
+                        .state
                         .render_passes
                         .offscreen_render_pass
                         .framebuffer
@@ -275,15 +272,13 @@ fn build_offscreen_render_pass(
         queue: build_context.queue.clone(),
         command_buffer_builder,
     };
-    <BasicTriangleDrawLayer as DrawLayer<MyState, MySetupState>>::build(
-        &mut build_context
-            .setup_state
-            .layers
-            .basic_triangle_draw_layer
-            .as_mut()
-            .unwrap(),
-        &mut layer_draw_context,
-    );
+    build_context
+        .setup_state
+        .layers
+        .basic_triangle_draw_layer
+        .as_mut()
+        .unwrap()
+        .build(&mut layer_draw_context);
 
     command_buffer_builder.end_render_pass().unwrap();
 }
@@ -293,7 +288,7 @@ fn build_blit_offscreen_to_result_image(
     command_buffer_builder: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
 ) {
     let source_image = build_context
-        .setup_state
+        .state
         .render_passes
         .offscreen_render_pass
         .attachment_image
@@ -301,7 +296,7 @@ fn build_blit_offscreen_to_result_image(
         .unwrap()
         .clone();
     let destination_image = build_context
-        .setup_state
+        .state
         .render_passes
         .offscreen_render_pass
         .result_image
@@ -375,7 +370,7 @@ struct Vertex {
     uv: [f32; 2],
 }
 impl_vertex!(Vertex, position, uv);
-impl DrawLayer<MyState, MySetupState> for ImageDebugDrawLayer {
+impl ImageDebugDrawLayer {
     fn setup(&mut self, setup_context: &mut LayerSetupContext<MyState, MySetupState>) {
         let vertices = [
             Vertex {
@@ -486,7 +481,7 @@ impl DrawLayer<MyState, MySetupState> for ImageDebugDrawLayer {
 
         let texture = ImageView::new_default(
             setup_context
-                .setup_state
+                .state
                 .render_passes
                 .offscreen_render_pass
                 .result_image

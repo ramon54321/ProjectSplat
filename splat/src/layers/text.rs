@@ -1,4 +1,4 @@
-use crate::{AlignHorizontal, AlignVertical, DrawLayer, LayerBuildContext, LayerSetupContext};
+use crate::{AlignHorizontal, AlignVertical, LayerBuildContext, LayerSetupContext};
 use bytemuck::{Pod, Zeroable};
 use rusttype::{gpu_cache::Cache, point, Font, PositionedGlyph, Rect, Scale};
 use std::{collections::HashMap, fmt::Debug, rc::Rc, sync::Arc};
@@ -75,9 +75,7 @@ impl TextDrawLayer {
     pub fn enqueue_text(&mut self, request: TextEnqueueRequest) {
         self.requests.push(request);
     }
-}
-impl<T, S> DrawLayer<T, S> for TextDrawLayer {
-    fn setup(&mut self, setup_context: &mut LayerSetupContext<T, S>) {
+    fn setup<T, S>(&mut self, setup_context: &mut LayerSetupContext<T, S>) {
         let font_data = include_bytes!("DejaVuSans.ttf");
         let font = Font::from_bytes(font_data as &[u8]).unwrap();
         let (cache, cache_pixels) = create_glyph_cache_and_pixels(font.clone());
@@ -188,7 +186,7 @@ impl<T, S> DrawLayer<T, S> for TextDrawLayer {
         self.cache = Some(cache);
         self.descriptor_set = Some(set);
     }
-    fn build(&mut self, build_context: &mut LayerBuildContext<T>) {
+    fn build<T>(&mut self, build_context: &mut LayerBuildContext<T>) {
         let screen_width = build_context.viewport.dimensions[0];
         let screen_height = build_context.viewport.dimensions[1];
 

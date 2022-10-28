@@ -1,4 +1,4 @@
-use crate::{DrawLayer, LayerBuildContext, LayerSetupContext};
+use crate::{LayerBuildContext, LayerSetupContext};
 use bytemuck::{Pod, Zeroable};
 use std::{fmt::Debug, sync::Arc};
 use vulkano::{
@@ -16,7 +16,7 @@ use vulkano::{
 };
 
 #[derive(Default)]
-pub struct BasicTriangleDrawLayer {
+pub struct LayerBuildBasicTriangle {
     pipeline: Option<Arc<GraphicsPipeline>>,
     vertex_buffer: Option<Arc<CpuAccessibleBuffer<[Vertex]>>>,
 }
@@ -26,8 +26,8 @@ struct Vertex {
     position: [f32; 2],
 }
 impl_vertex!(Vertex, position);
-impl<T, S> DrawLayer<T, S> for BasicTriangleDrawLayer {
-    fn setup(&mut self, setup_context: &mut LayerSetupContext<T, S>) {
+impl LayerBuildBasicTriangle {
+    pub fn setup<T, S>(&mut self, setup_context: &mut LayerSetupContext<T, S>) {
         let vertices = [
             Vertex {
                 position: [-0.5, -0.25],
@@ -98,7 +98,7 @@ impl<T, S> DrawLayer<T, S> for BasicTriangleDrawLayer {
         self.pipeline = Some(pipeline);
         self.vertex_buffer = Some(vertex_buffer);
     }
-    fn build(&mut self, build_context: &mut LayerBuildContext<T>) {
+    pub fn build<T>(&mut self, build_context: &mut LayerBuildContext<T>) {
         build_context
             .command_buffer_builder
             .bind_pipeline_graphics(self.pipeline.as_ref().unwrap().clone())

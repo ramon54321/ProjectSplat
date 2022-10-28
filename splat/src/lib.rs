@@ -30,7 +30,7 @@ mod layers;
 mod util;
 
 pub use layers::{
-    basic::BasicTriangleDrawLayer,
+    basic::LayerBuildBasicTriangle,
     text::{TextDrawLayer, TextEnqueueRequest},
 };
 pub use winit::event::VirtualKeyCode;
@@ -75,11 +75,6 @@ pub struct BuildContext<'a, 'b, T, S> {
     pub swapchain: Arc<Swapchain<Window>>,
     pub swapchain_framebuffer: Arc<Framebuffer>,
     pub swapchain_framebuffer_image_index: usize,
-}
-
-pub trait DrawLayer<T, S> {
-    fn setup(&mut self, setup_context: &mut LayerSetupContext<T, S>);
-    fn build(&mut self, build_context: &mut LayerBuildContext<T>);
 }
 
 pub enum AlignHorizontal {
