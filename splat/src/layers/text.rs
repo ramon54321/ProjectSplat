@@ -75,7 +75,7 @@ impl TextDrawLayer {
     pub fn enqueue_text(&mut self, request: TextEnqueueRequest) {
         self.requests.push(request);
     }
-    fn setup<T, S>(&mut self, setup_context: &mut LayerSetupContext<T, S>) {
+    pub fn setup<T, S>(&mut self, setup_context: &mut LayerSetupContext<T, S>) {
         let font_data = include_bytes!("DejaVuSans.ttf");
         let font = Font::from_bytes(font_data as &[u8]).unwrap();
         let (cache, cache_pixels) = create_glyph_cache_and_pixels(font.clone());
@@ -186,7 +186,7 @@ impl TextDrawLayer {
         self.cache = Some(cache);
         self.descriptor_set = Some(set);
     }
-    fn build<T>(&mut self, build_context: &mut LayerBuildContext<T>) {
+    pub fn build<T>(&mut self, build_context: &mut LayerBuildContext<T>) {
         let screen_width = build_context.viewport.dimensions[0];
         let screen_height = build_context.viewport.dimensions[1];
 

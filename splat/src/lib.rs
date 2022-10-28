@@ -10,15 +10,15 @@ use std::{
     time::{Duration, Instant},
 };
 use vulkano::{
-    command_buffer::{AutoCommandBufferBuilder, CommandBufferExecFuture, PrimaryAutoCommandBuffer},
+    command_buffer::{AutoCommandBufferBuilder, PrimaryAutoCommandBuffer},
     device::{Device, Queue},
     pipeline::graphics::viewport::Viewport,
     render_pass::{Framebuffer, RenderPass},
     swapchain::{
-        acquire_next_image, AcquireError, PresentFuture, Swapchain, SwapchainAcquireFuture,
+        acquire_next_image, AcquireError, Swapchain, SwapchainAcquireFuture,
         SwapchainCreateInfo, SwapchainCreationError,
     },
-    sync::{self, FenceSignalFuture, FlushError, GpuFuture, JoinFuture},
+    sync::{self, GpuFuture},
 };
 use winit::{
     event::{ElementState, Event, MouseButton, WindowEvent},
