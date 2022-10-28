@@ -10,13 +10,12 @@ use std::{
     time::{Duration, Instant},
 };
 use vulkano::{
-    command_buffer::{AutoCommandBufferBuilder, PrimaryAutoCommandBuffer},
     device::{Device, Queue},
     pipeline::graphics::viewport::Viewport,
     render_pass::{Framebuffer, RenderPass},
     swapchain::{
-        acquire_next_image, AcquireError, Swapchain, SwapchainAcquireFuture,
-        SwapchainCreateInfo, SwapchainCreationError,
+        acquire_next_image, AcquireError, Swapchain, SwapchainAcquireFuture, SwapchainCreateInfo,
+        SwapchainCreationError,
     },
     sync::{self, GpuFuture},
 };
@@ -31,25 +30,9 @@ mod util;
 
 pub use layers::{
     basic::LayerBuildBasicTriangle,
-    text::{TextDrawLayer, TextEnqueueRequest},
+    text::{LayerBuildText, TextEnqueueRequest},
 };
 pub use winit::event::VirtualKeyCode;
-
-pub struct LayerSetupContext<'a, T, S> {
-    pub state: &'a mut T,
-    pub setup_state: &'a mut S,
-    pub device: Arc<Device>,
-    pub queue: Arc<Queue>,
-    pub render_pass: Arc<RenderPass>,
-}
-pub struct LayerBuildContext<'a, 'b, T> {
-    pub state: &'a mut T,
-    pub meta: &'a mut Meta<'b>,
-    pub viewport: Viewport,
-    pub device: Arc<Device>,
-    pub queue: Arc<Queue>,
-    pub command_buffer_builder: &'a mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
-}
 
 pub struct SetupContext<'a, T, S> {
     pub state: &'a mut T,
@@ -64,14 +47,14 @@ pub struct SetupResponse {
 }
 
 pub struct BuildContext<'a, 'b, T, S> {
-    pub previous_frame_end_future: &'a mut Option<Box<dyn GpuFuture>>,
-    pub acquire_future: Option<SwapchainAcquireFuture<Window>>,
     pub state: &'a mut T,
     pub setup_state: &'a mut S,
     pub meta: &'a mut Meta<'b>,
     pub viewport: Viewport,
     pub device: Arc<Device>,
     pub queue: Arc<Queue>,
+    pub previous_frame_end_future: &'a mut Option<Box<dyn GpuFuture>>,
+    pub acquire_future: Option<SwapchainAcquireFuture<Window>>,
     pub swapchain: Arc<Swapchain<Window>>,
     pub swapchain_framebuffer: Arc<Framebuffer>,
     pub swapchain_framebuffer_image_index: usize,
@@ -121,19 +104,6 @@ impl Default for SplatCreateInfo {
         }
     }
 }
-
-//pub type BuildResponse = Result<
-//FenceSignalFuture<
-//PresentFuture<
-//CommandBufferExecFuture<
-//JoinFuture<Box<dyn GpuFuture>, SwapchainAcquireFuture<Window>>,
-//PrimaryAutoCommandBuffer,
-//>,
-//Window,
-//>,
-//>,
-//FlushError,
-//>;
 
 pub type BuildResponse = Option<Box<dyn GpuFuture>>;
 

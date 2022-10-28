@@ -1,8 +1,9 @@
-use crate::{LayerBuildContext, LayerSetupContext};
 use bytemuck::{Pod, Zeroable};
 use std::{fmt::Debug, sync::Arc};
 use vulkano::{
     buffer::{BufferUsage, CpuAccessibleBuffer, TypedBufferAccess},
+    command_buffer::{AutoCommandBufferBuilder, PrimaryAutoCommandBuffer},
+    device::Device,
     impl_vertex,
     pipeline::{
         graphics::{
@@ -12,7 +13,7 @@ use vulkano::{
         },
         GraphicsPipeline,
     },
-    render_pass::Subpass,
+    render_pass::{RenderPass, Subpass},
 };
 
 #[derive(Default)]
@@ -27,7 +28,7 @@ struct Vertex {
 }
 impl_vertex!(Vertex, position);
 impl LayerBuildBasicTriangle {
-    pub fn setup<T, S>(&mut self, setup_context: &mut LayerSetupContext<T, S>) {
+    pub fn setup(&mut self, device: Arc<Device>, render_pass: Arc<RenderPass>) {
         let vertices = [
             Vertex {
                 position: [-0.5, -0.25],
@@ -40,7 +41,7 @@ impl LayerBuildBasicTriangle {
             },
         ];
         let vertex_buffer = CpuAccessibleBuffer::from_iter(
-            setup_context.device.clone(),
+            device.clone(),
             BufferUsage {
                 vertex_buffer: true,
                 ..BufferUsage::empty()
@@ -80,11 +81,11 @@ impl LayerBuildBasicTriangle {
             }
         }
 
-        let vs = vs::load(setup_context.device.clone()).expect("Could not load vertex shader");
-        let fs = fs::load(setup_context.device.clone()).expect("Could not load fragment shader");
+        let vs = vs::load(device.clone()).expect("Could not load vertex shader");
+        let fs = fs::load(device.clone()).expect("Could not load fragment shader");
 
         let pipeline = GraphicsPipeline::start()
-            .render_pass(Subpass::from(setup_context.render_pass.clone(), 0).unwrap())
+            .render_pass(Subpass::from(render_pass.clone(), 0).unwrap())
             .vertex_input_state(BuffersDefinition::new().vertex::<Vertex>())
             .input_assembly_state(
                 InputAssemblyState::new().topology(PrimitiveTopology::TriangleList),
@@ -92,15 +93,17 @@ impl LayerBuildBasicTriangle {
             .vertex_shader(vs.entry_point("main").unwrap(), ())
             .viewport_state(ViewportState::viewport_dynamic_scissor_irrelevant())
             .fragment_shader(fs.entry_point("main").unwrap(), ())
-            .build(setup_context.device.clone())
+            .build(device.clone())
             .expect("Could not build pipeline");
 
         self.pipeline = Some(pipeline);
         self.vertex_buffer = Some(vertex_buffer);
     }
-    pub fn build<T>(&mut self, build_context: &mut LayerBuildContext<T>) {
-        build_context
-            .command_buffer_builder
+    pub fn build(
+        &mut self,
+        command_buffer_builder: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
+    ) {
+        command_buffer_builder
             .bind_pipeline_graphics(self.pipeline.as_ref().unwrap().clone())
             .bind_vertex_buffers(0, self.vertex_buffer.as_ref().unwrap().clone())
             .draw(self.vertex_buffer.as_ref().unwrap().len() as u32, 1, 0, 0)

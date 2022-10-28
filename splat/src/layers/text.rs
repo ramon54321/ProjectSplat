@@ -1,12 +1,13 @@
-use crate::{AlignHorizontal, AlignVertical, LayerBuildContext, LayerSetupContext};
+use crate::{AlignHorizontal, AlignVertical, Meta};
 use bytemuck::{Pod, Zeroable};
 use rusttype::{gpu_cache::Cache, point, Font, PositionedGlyph, Rect, Scale};
 use std::{collections::HashMap, fmt::Debug, rc::Rc, sync::Arc};
 use uuid::Uuid;
 use vulkano::{
     buffer::{BufferUsage, CpuAccessibleBuffer, TypedBufferAccess},
+    command_buffer::{AutoCommandBufferBuilder, PrimaryAutoCommandBuffer},
     descriptor_set::{PersistentDescriptorSet, WriteDescriptorSet},
-    device::Device,
+    device::{Device, Queue},
     format::Format,
     image::{view::ImageView, ImageDimensions, ImmutableImage, MipmapsCount},
     impl_vertex,
@@ -15,11 +16,11 @@ use vulkano::{
             color_blend::ColorBlendState,
             input_assembly::{InputAssemblyState, PrimitiveTopology},
             vertex_input::BuffersDefinition,
-            viewport::ViewportState,
+            viewport::{Viewport, ViewportState},
         },
         GraphicsPipeline, Pipeline, PipelineBindPoint,
     },
-    render_pass::Subpass,
+    render_pass::{RenderPass, Subpass},
     sampler::{Filter, Sampler, SamplerAddressMode, SamplerCreateInfo, SamplerMipmapMode},
 };
 
@@ -61,7 +62,7 @@ pub struct TextEnqueueRequest {
 }
 
 #[derive(Default)]
-pub struct TextDrawLayer {
+pub struct LayerBuildText {
     device: Option<Arc<Device>>,
     pipeline: Option<Arc<GraphicsPipeline>>,
     descriptor_set: Option<Arc<PersistentDescriptorSet>>,
@@ -71,11 +72,11 @@ pub struct TextDrawLayer {
     text_glyph_cache: HashMap<String, GlyphCacheEntry>,
     text_vertices_cache: HashMap<Uuid, Rc<Vec<Vertex>>>,
 }
-impl TextDrawLayer {
+impl LayerBuildText {
     pub fn enqueue_text(&mut self, request: TextEnqueueRequest) {
         self.requests.push(request);
     }
-    pub fn setup<T, S>(&mut self, setup_context: &mut LayerSetupContext<T, S>) {
+    pub fn setup(&mut self, device: Arc<Device>, render_pass: Arc<RenderPass>, queue: Arc<Queue>) {
         let font_data = include_bytes!("DejaVuSans.ttf");
         let font = Font::from_bytes(font_data as &[u8]).unwrap();
         let (cache, cache_pixels) = create_glyph_cache_and_pixels(font.clone());
@@ -120,11 +121,11 @@ impl TextDrawLayer {
             }
         }
 
-        let vs = vs::load(setup_context.device.clone()).expect("Could not load vertex shader");
-        let fs = fs::load(setup_context.device.clone()).expect("Could not load fragment shader");
+        let vs = vs::load(device.clone()).expect("Could not load vertex shader");
+        let fs = fs::load(device.clone()).expect("Could not load fragment shader");
 
         let pipeline = GraphicsPipeline::start()
-            .render_pass(Subpass::from(setup_context.render_pass.clone(), 0).unwrap())
+            .render_pass(Subpass::from(render_pass.clone(), 0).unwrap())
             .vertex_input_state(BuffersDefinition::new().vertex::<Vertex>())
             .input_assembly_state(
                 InputAssemblyState::new().topology(PrimitiveTopology::TriangleList),
@@ -133,7 +134,7 @@ impl TextDrawLayer {
             .viewport_state(ViewportState::viewport_dynamic_scissor_irrelevant())
             .fragment_shader(fs.entry_point("main").unwrap(), ())
             .color_blend_state(ColorBlendState::default().blend_alpha())
-            .build(setup_context.device.clone())
+            .build(device.clone())
             .expect("Could not build pipeline");
 
         let (cache_texture, _) = ImmutableImage::from_iter(
@@ -145,12 +146,12 @@ impl TextDrawLayer {
             },
             MipmapsCount::One,
             Format::R8_UNORM,
-            setup_context.queue.clone(),
+            queue.clone(),
         )
         .expect("Could not create text glyph cache texture");
 
         let sampler = Sampler::new(
-            setup_context.device.clone(),
+            device.clone(),
             SamplerCreateInfo {
                 min_filter: Filter::Linear,
                 mag_filter: Filter::Linear,
@@ -180,25 +181,29 @@ impl TextDrawLayer {
         )
         .expect("Could not create descriptor set");
 
-        self.device = Some(setup_context.device.clone());
+        self.device = Some(device.clone());
         self.pipeline = Some(pipeline);
         self.font = Some(font);
         self.cache = Some(cache);
         self.descriptor_set = Some(set);
     }
-    pub fn build<T>(&mut self, build_context: &mut LayerBuildContext<T>) {
-        let screen_width = build_context.viewport.dimensions[0];
-        let screen_height = build_context.viewport.dimensions[1];
+    pub fn build<T>(
+        &mut self,
+        command_buffer_builder: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
+        viewport: &Viewport,
+        meta: &Meta,
+    ) {
+        let screen_width = viewport.dimensions[0];
+        let screen_height = viewport.dimensions[1];
 
         // Check if caches need to be rebuilt
-        if build_context.meta.was_swapchain_rebuilt {
+        if meta.was_swapchain_rebuilt {
             self.text_glyph_cache.clear();
             self.text_vertices_cache.clear();
         }
 
         // Prepare command buffer for text draw calls
-        build_context
-            .command_buffer_builder
+        command_buffer_builder
             .bind_pipeline_graphics(self.pipeline.as_ref().unwrap().clone())
             .bind_descriptor_sets(
                 PipelineBindPoint::Graphics,
@@ -227,7 +232,7 @@ impl TextDrawLayer {
         );
 
         submit_vertices_draw(
-            build_context,
+            command_buffer_builder,
             self.device.as_ref().unwrap().clone(),
             vertices,
         );
@@ -470,8 +475,8 @@ fn build_vertices_from_text_datas(
 }
 
 #[inline]
-fn submit_vertices_draw<T>(
-    build_context: &mut LayerBuildContext<T>,
+fn submit_vertices_draw(
+    command_buffer_builder: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
     device: Arc<Device>,
     vertices: Vec<Vertex>,
 ) {
@@ -486,8 +491,7 @@ fn submit_vertices_draw<T>(
             vertices,
         )
         .expect("Could not create buffer from iter");
-        build_context
-            .command_buffer_builder
+        command_buffer_builder
             .bind_vertex_buffers(0, vertex_buffer.clone())
             .draw(vertex_buffer.len() as u32, 1, 0, 0)
             .unwrap();
@@ -496,7 +500,7 @@ fn submit_vertices_draw<T>(
 
 #[allow(dead_code)]
 fn submit_debug_cache_texture_draw<T>(
-    build_context: &mut LayerBuildContext<T>,
+    command_buffer_builder: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
     device: Arc<Device>,
 ) {
     let mut vertices = Vec::new();
@@ -540,8 +544,7 @@ fn submit_debug_cache_texture_draw<T>(
         vertices,
     )
     .expect("Could not create buffer from iter");
-    build_context
-        .command_buffer_builder
+    command_buffer_builder
         .bind_vertex_buffers(0, vertex_buffer.clone())
         .draw(vertex_buffer.len() as u32, 1, 0, 0)
         .unwrap();
