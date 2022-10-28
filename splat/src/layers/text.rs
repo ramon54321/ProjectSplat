@@ -187,7 +187,7 @@ impl LayerBuildText {
         self.cache = Some(cache);
         self.descriptor_set = Some(set);
     }
-    pub fn build<T>(
+    pub fn build(
         &mut self,
         command_buffer_builder: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
         viewport: &Viewport,
