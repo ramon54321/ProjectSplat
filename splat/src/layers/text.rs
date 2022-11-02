@@ -29,7 +29,7 @@ const TEXT_VERTICES_CACHE_LIMIT: usize = 128;
 const PIXEL_CACHE_WIDTH: usize = 256;
 const PIXEL_CACHE_HEIGHT: usize = 256;
 const CHAR_SET: &str =
-    " abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.,;:!@#$%^&*()[]{}?-=1234567890`~/<>|\\";
+    " abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.,;:!@#$%^&*()[]{}?_-+=1234567890`~/<>|\\";
 
 type GlyphCacheEntry = (Rc<Vec<PositionedGlyph<'static>>>, f32, f32, Uuid);
 
