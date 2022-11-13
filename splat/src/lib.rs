@@ -60,11 +60,13 @@ pub struct BuildContext<'a, 'b, T, S> {
     pub swapchain_framebuffer_image_index: usize,
 }
 
+#[derive(Hash)]
 pub enum AlignHorizontal {
     Left,
     Center,
     Right,
 }
+#[derive(Hash)]
 pub enum AlignVertical {
     Top,
     Center,

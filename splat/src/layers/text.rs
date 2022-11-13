@@ -1,7 +1,14 @@
 use crate::{AlignHorizontal, AlignVertical, Meta};
 use bytemuck::{Pod, Zeroable};
+use derivative::Derivative;
 use rusttype::{gpu_cache::Cache, point, Font, PositionedGlyph, Rect, Scale};
-use std::{collections::HashMap, fmt::Debug, rc::Rc, sync::Arc};
+use std::{
+    collections::{hash_map::DefaultHasher, HashMap},
+    fmt::Debug,
+    hash::{BuildHasher, Hash, Hasher},
+    rc::Rc,
+    sync::Arc,
+};
 use uuid::Uuid;
 use vulkano::{
     buffer::{BufferUsage, CpuAccessibleBuffer, TypedBufferAccess},
@@ -51,11 +58,16 @@ struct Vertex {
 }
 impl_vertex!(Vertex, position, tex_position, color);
 
+#[derive(Derivative)]
+#[derivative(Hash)]
 pub struct TextEnqueueRequest {
+    #[derivative(Hash = "ignore")]
     pub x: f32,
+    #[derivative(Hash = "ignore")]
     pub y: f32,
     pub align_horizontal: AlignHorizontal,
     pub align_vertical: AlignVertical,
+    #[derivative(Hash = "ignore")]
     pub color: [f32; 4],
     pub text: String,
     pub should_cache: bool,
@@ -69,7 +81,7 @@ pub struct LayerBuildText {
     font: Option<Font<'static>>,
     cache: Option<Cache<'static>>,
     requests: Vec<TextEnqueueRequest>,
-    text_glyph_cache: HashMap<String, GlyphCacheEntry>,
+    text_glyph_cache: HashMap<u64, GlyphCacheEntry>,
     text_vertices_cache: HashMap<Uuid, Rc<Vec<Vertex>>>,
 }
 impl LayerBuildText {
@@ -280,7 +292,7 @@ fn create_glyph_cache_and_pixels<'a>(font: Font<'a>) -> (Cache<'a>, Vec<u8>) {
 #[inline]
 fn build_text_data_from_requests(
     requests: &Vec<TextEnqueueRequest>,
-    text_glyph_cache: &mut HashMap<String, GlyphCacheEntry>,
+    text_glyph_cache: &mut HashMap<u64, GlyphCacheEntry>,
     font: &Font<'static>,
 ) -> Vec<TextData> {
     let mut texts = Vec::with_capacity(requests.len());
@@ -290,9 +302,17 @@ fn build_text_data_from_requests(
 
         // Check if glyphs for this text is cached
         if request.should_cache {
+            let mut hasher = DefaultHasher::new();
+            request.hash(&mut hasher);
+            let hash = hasher.finish();
             if let Some((glyphs, horizontal_offset, vertical_offset, uuid)) =
-                text_glyph_cache.get(&request.text)
+                text_glyph_cache.get(&hash)
             {
+                //
+                // TextData needs to be unique per position whereas Requests do not need to be
+                // unique per position, thus TextData needs its own Uuid which takes the base
+                // request uuid into consideration and makes it unique depending on the position.
+                //
                 let mut position_bytes = [0u8; 24];
                 let position_x_bytes = &request.x.to_ne_bytes();
                 let position_y_bytes = &request.y.to_ne_bytes();
@@ -371,9 +391,15 @@ fn build_text_data_from_requests(
                 println!("Vulkan Text: Resetting Glyph Cache");
             }
 
+            // Request hash
+            let mut hasher = DefaultHasher::new();
+            request.hash(&mut hasher);
+            let hash = hasher.finish();
+
             // Cache glyphs
             text_glyph_cache.insert(
-                request.text.clone(),
+                hash,
+                //request.text.clone(),
                 (glyphs, horizontal_offset, vertical_offset, uuid),
             );
         }

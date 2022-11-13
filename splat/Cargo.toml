@@ -21,3 +21,4 @@ rand = "0.8.4"
 glium = "0.32.1"
 rusttype = { version = "0.8.3", features = ["gpu_cache"] }
 uuid =  { version = "1.1.2", features = ["v3", "v4"] }
+derivative = "2.2.0"
