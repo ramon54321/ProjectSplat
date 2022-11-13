@@ -1,11 +1,11 @@
-use crate::{AlignHorizontal, AlignVertical, Meta};
+use crate::{AlignHorizontal, AlignVertical, Meta, TextSize};
 use bytemuck::{Pod, Zeroable};
 use derivative::Derivative;
 use rusttype::{gpu_cache::Cache, point, Font, PositionedGlyph, Rect, Scale};
 use std::{
     collections::{hash_map::DefaultHasher, HashMap},
     fmt::Debug,
-    hash::{BuildHasher, Hash, Hasher},
+    hash::{Hash, Hasher},
     rc::Rc,
     sync::Arc,
 };
@@ -33,8 +33,8 @@ use vulkano::{
 
 const TEXT_GLYPH_CACHE_LIMIT: usize = 128;
 const TEXT_VERTICES_CACHE_LIMIT: usize = 128;
-const PIXEL_CACHE_WIDTH: usize = 256;
-const PIXEL_CACHE_HEIGHT: usize = 256;
+const PIXEL_CACHE_WIDTH: usize = 1024;
+const PIXEL_CACHE_HEIGHT: usize = 1024;
 const CHAR_SET: &str =
     " abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.,;:!@#$%^&*()[]{}?_-+=1234567890`~/<>|\\";
 
@@ -65,6 +65,7 @@ pub struct TextEnqueueRequest {
     pub x: f32,
     #[derivative(Hash = "ignore")]
     pub y: f32,
+    pub size: TextSize,
     pub align_horizontal: AlignHorizontal,
     pub align_vertical: AlignVertical,
     #[derivative(Hash = "ignore")]
@@ -258,13 +259,16 @@ fn create_glyph_cache_and_pixels<'a>(font: Font<'a>) -> (Cache<'a>, Vec<u8>) {
         .position_tolerance(5.0)
         .build();
 
-    let glyphs = font.glyphs_for(CHAR_SET.chars());
+    let sizes = [24.0, 48.0, 72.0];
 
-    let scale = Scale::uniform(24.0);
-    for glyph in glyphs {
-        let glyph = glyph.scaled(scale);
-        let glyph = glyph.positioned(point(0.0, 0.0));
-        cache.queue_glyph(0, glyph.clone());
+    for size in sizes {
+        let scale = Scale::uniform(size);
+        let glyphs = font.glyphs_for(CHAR_SET.chars());
+        for glyph in glyphs {
+            let glyph = glyph.scaled(scale);
+            let glyph = glyph.positioned(point(0.0, 0.0));
+            cache.queue_glyph(0, glyph.clone());
+        }
     }
 
     let mut pixels = vec![0; PIXEL_CACHE_WIDTH * PIXEL_CACHE_HEIGHT];
@@ -298,7 +302,11 @@ fn build_text_data_from_requests(
     let mut texts = Vec::with_capacity(requests.len());
     for i in 0..requests.len() {
         let request = &requests[i];
-        let scale = Scale::uniform(24.0);
+        let scale = match request.size {
+            TextSize::Small => Scale::uniform(24.0),
+            TextSize::Medium => Scale::uniform(48.0),
+            TextSize::Large => Scale::uniform(72.0),
+        };
 
         // Check if glyphs for this text is cached
         if request.should_cache {

@@ -61,6 +61,12 @@ pub struct BuildContext<'a, 'b, T, S> {
 }
 
 #[derive(Hash)]
+pub enum TextSize {
+    Small,
+    Medium,
+    Large,
+}
+#[derive(Hash)]
 pub enum AlignHorizontal {
     Left,
     Center,
